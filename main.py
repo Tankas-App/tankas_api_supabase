@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routes import auth
+from app.routes import auth, issues, test
 
 # Create the FastAPI application
 app = FastAPI(
@@ -21,6 +21,8 @@ app.add_middleware(
 
 # Include routers from different modules
 app.include_router(auth.router, prefix="/api")
+app.include_router(issues.router, prefix="/api")
+app.include_router(test.router, prefix="/api")
 
 # Health check endpoint
 @app.get("/")

@@ -10,6 +10,7 @@ class Config:
     SUPABASE_URL = os.getenv("SUPABASE_URL")
     SUPABASE_KEY = os.getenv("SUPABASE_KEY")
     JWT_SECRET = os.getenv("JWT_SECRET")
+    GOOGLE_VISION_CREDENTIALS_PATH = os.getenv("GOOGLE_VISION_CREDENTIALS_PATH")
     
     # Validation: Make sure required variables are set
     if not SUPABASE_URL:
@@ -18,5 +19,7 @@ class Config:
         raise ValueError("SUPABASE_KEY not found in .env file")
     if not JWT_SECRET:
         raise ValueError("JWT_SECRET not found in .env file")
+    if not GOOGLE_VISION_CREDENTIALS_PATH:
+        raise ValueError("GOOGLE_VISION_CREDENTIALS_PATH not found in .env file")
 
 config = Config()
