@@ -67,23 +67,25 @@ class IssueService:
                 location_source = "manual"
             
             # Step 3: Send to Google Vision for AI analysis
-            print("Step 3: Analyzing image with Google Vision...")
-            ai_analysis = await self.ai_service.analyze_issue_image(photo_bytes)
+            # TODO: Enable this when Google Vision billing is confirmed
+            # print("Step 3: Analyzing image with Google Vision...")
+            # ai_analysis = await self.ai_service.analyze_issue_image(photo_bytes)
             
             # Check if this is a valid cleanup issue
-            if not ai_analysis.get("is_valid_issue"):
-                raise ValueError(ai_analysis.get("error", "Image analysis failed"))
+            # if not ai_analysis.get("is_valid_issue"):
+            #     raise ValueError(ai_analysis.get("error", "Image analysis failed"))
             
             # Step 4: Extract data from AI analysis
-            ai_difficulty = ai_analysis["difficulty"]
-            ai_description = ai_analysis["description"]
-            ai_confidence = ai_analysis["confidence"]
-            ai_labels = ai_analysis["labels"]
+            # For now, use default values. When AI is enabled, these will come from Google Vision
+            ai_difficulty = "medium"  # Default difficulty
+            ai_description = f"Environmental issue reported at {latitude}, {longitude}"
+            ai_confidence = 0  # No AI confidence without analysis
+            ai_labels = []  # No labels without analysis
             
-            # Use AI-generated description if user didn't provide one
+            # Use user-provided description if available, otherwise use default
             final_description = description or ai_description
             
-            # Use AI-determined difficulty
+            # Use AI-determined difficulty, or default to medium
             difficulty = ai_difficulty
             
             # Validate priority
@@ -125,7 +127,12 @@ class IssueService:
             
             return {
                 "issue": created_issue,
-                "ai_analysis": ai_analysis
+                "ai_analysis": {
+                    "difficulty": ai_difficulty,
+                    "description": ai_description,
+                    "confidence": ai_confidence,
+                    "labels": ai_labels
+                }
             }
         
         except ValueError as e:
