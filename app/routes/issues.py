@@ -124,11 +124,7 @@ async def create_issue(
         # Step 1: Extract user_id from token using Request object
         user_id = await get_current_user_id(request)
         
-        # Step 2: Extract the access token from Authorization header
-        auth_header = request.headers.get("authorization", "")
-        access_token = auth_header.replace("Bearer ", "").strip()
-        
-        # Step 3: Read photo file
+        # Step 2: Read photo file
         try:
             photo_bytes = await file.read()
             
@@ -154,8 +150,7 @@ async def create_issue(
             photo_bytes=photo_bytes,
             latitude=latitude,
             longitude=longitude,
-            priority=priority,
-            access_token=access_token
+            priority=priority
         )
         
         created_issue = result["issue"]
