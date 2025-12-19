@@ -21,7 +21,8 @@ class IssueService:
         photo_bytes: bytes,
         latitude: float,
         longitude: float,
-        priority: str = "medium"
+        priority: str = "medium",
+        access_token: str = None
     ) -> dict:
         """
         Create a new environmental issue
@@ -52,7 +53,7 @@ class IssueService:
         try:
             # Step 1: Upload photo to Supabase Storage
             print("Step 1: Uploading photo to storage...")
-            photo_url = await self._upload_photo_to_storage(photo_bytes, user_id)
+            photo_url = await self._upload_photo_to_storage(photo_bytes, user_id, access_token)
             
             # Step 2: Extract EXIF location (if available)
             print("Step 2: Extracting EXIF data...")
@@ -132,13 +133,14 @@ class IssueService:
         except Exception as e:
             raise Exception(f"Failed to create issue: {str(e)}")
     
-    async def _upload_photo_to_storage(self, photo_bytes: bytes, user_id: str) -> str:
+    async def _upload_photo_to_storage(self, photo_bytes: bytes, user_id: str, access_token: str) -> str:
         """
         Upload photo to Supabase Storage
         
         Args:
             photo_bytes: Raw photo data
             user_id: User's UUID (for organizing storage)
+            access_token: JWT token for authentication
             
         Returns:
             Public URL of uploaded photo
@@ -148,20 +150,26 @@ class IssueService:
             timestamp = datetime.utcnow().isoformat()
             filename = f"{user_id}/{timestamp}.jpg"
             
-            # Upload to Supabase Storage
-            response = self.supabase.storage.from_("issues").upload(
+            # Create authenticated Supabase client with user's token
+            from supabase import create_client
+            from app.config import config
+            
+            auth_supabase = create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
+            auth_supabase.auth.set_session(access_token, "")
+            
+            # Upload to Supabase Storage with authentication
+            response = auth_supabase.storage.from_("issues").upload(
                 filename,
                 photo_bytes
             )
             
             # Get public URL
-            public_url = self.supabase.storage.from_("issues").get_public_url(filename)
+            public_url = auth_supabase.storage.from_("issues").get_public_url(filename)
             
             return public_url
         
         except Exception as e:
-            print(f"DEBUG: Full error: {e}")
-            print(f"DEBUG: Error type: {type(e)}")
+            print(f"DEBUG: Photo upload error: {e}")
             raise Exception(f"Photo upload failed: {str(e)}")
     
     async def get_issue(self, issue_id: str) -> dict:
