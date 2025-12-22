@@ -1,6 +1,7 @@
 from app.database import supabase
 from app.utils.cloudinary_helper import CloudinaryHelper
 from app.utils.distance_calculator import DistanceCalculator
+from app.services.point_service import PointsService  # NEW IMPORT
 from datetime import datetime
 from typing import Optional, List
 
@@ -10,6 +11,7 @@ class CollectionsService:
     def __init__(self):
         """Initialize with Supabase client"""
         self.supabase = supabase
+        self.points_service = PointsService()  # NEW
         
         # Default payment per kg (can be configured)
         self.PAYMENT_PER_KG = 2.0  # GHS per kg (adjust as needed)
@@ -364,15 +366,31 @@ class CollectionsService:
                 
                 self.supabase.table("collections").update(update_data).eq("id", collection_id).execute()
                 
-                # Award points to collector
-                user_response = self.supabase.table("users").select("total_points").eq("id", collection["collected_by_user_id"]).execute()
+                # ✅ NEW: Update user's kg collected stat
+                collector_id = collection["collected_by_user_id"]
+                user_response = self.supabase.table("users").select("total_kg_collected").eq("id", collector_id).execute()
                 
                 if user_response.data:
-                    current_points = user_response.data[0]["total_points"]
-                    new_total = current_points + points_earned
+                    current_kg = user_response.data[0].get("total_kg_collected", 0) or 0
+                    new_total_kg = current_kg + final_quantity
                     self.supabase.table("users").update({
-                        "total_points": new_total
-                    }).eq("id", collection["collected_by_user_id"]).execute()
+                        "total_kg_collected": new_total_kg
+                    }).eq("id", collector_id).execute()
+                
+                # ✅ NEW: Use PointsService to award points
+                # This handles: points update, activity logging, badges, cache invalidation
+                await self.points_service.award_points(
+                    user_id=collector_id,
+                    points=points_earned,
+                    activity_type="collection_verified",
+                    reference_id=collection_id,
+                    reference_type="collection",
+                    metadata={
+                        "quantity_kg": final_quantity,
+                        "destination_id": destination_id,
+                        "payment_amount": payment_amount
+                    }
+                )
             else:
                 # Mark as rejected
                 update_data = {

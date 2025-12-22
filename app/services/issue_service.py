@@ -3,6 +3,7 @@ from app.utils.exif_helper import ExifHelper
 from app.utils.ai_service import AIService
 from app.utils.points_calculator import PointsCalculator
 from app.utils.cloudinary_helper import CloudinaryHelper
+from app.services.point_service import PointsService  # NEW IMPORT
 from datetime import datetime
 from typing import Optional, Tuple
 
@@ -13,6 +14,10 @@ class IssueService:
         """Initialize services"""
         self.supabase = supabase
         self.ai_service = AIService()
+        self.points_service = PointsService()  # NEW
+        
+        # Points for reporting an issue
+        self.ISSUE_REPORT_POINTS = 15  # NEW
     
     async def create_issue(
         self,
@@ -28,11 +33,12 @@ class IssueService:
         Create a new environmental issue
         
         Flow:
-        1. Upload photo to Supabase Storage
+        1. Upload photo to Cloudinary
         2. Extract EXIF location (if available)
         3. Send photo to Google Vision for AI analysis
-        4. Calculate difficulty and points
+        4. Calculate difficulty and points based on AI results
         5. Create issue record in database
+        6. Award points to reporter (via PointsService)
         
         Args:
             user_id: UUID of user reporting the issue
@@ -51,7 +57,7 @@ class IssueService:
             Exception: If any step fails
         """
         try:
-            # Step 1: Upload photo to Supabase Storage
+            # Step 1: Upload photo to Cloudinary
             print("Step 1: Uploading photo to storage...")
             photo_url = await self._upload_photo_to_storage(photo_bytes, user_id)
             
@@ -67,34 +73,29 @@ class IssueService:
                 location_source = "manual"
             
             # Step 3: Send to Google Vision for AI analysis
-            # TODO: Enable this when Google Vision billing is confirmed
-            # print("Step 3: Analyzing image with Google Vision...")
-            # ai_analysis = await self.ai_service.analyze_issue_image(photo_bytes)
+            print("Step 3: Analyzing image with Google Vision...")
+            ai_analysis = await self.ai_service.analyze_issue_image(photo_bytes)
             
             # Check if this is a valid cleanup issue
-            # if not ai_analysis.get("is_valid_issue"):
-            #     raise ValueError(ai_analysis.get("error", "Image analysis failed"))
+            if not ai_analysis.get("is_valid_issue"):
+                raise ValueError(ai_analysis.get("error", "Image analysis failed - this doesn't appear to be an environmental cleanup issue"))
             
             # Step 4: Extract data from AI analysis
-            # For now, use default values. When AI is enabled, these will come from Google Vision
-            ai_difficulty = "medium"  # Default difficulty
-            ai_description = f"Environmental issue reported at {latitude}, {longitude}"
-            ai_confidence = 0  # No AI confidence without analysis
-            ai_labels = []  # No labels without analysis
+            ai_difficulty = ai_analysis.get("difficulty", "medium")
+            ai_description = ai_analysis.get("description", f"Environmental issue reported at {latitude}, {longitude}")
+            ai_confidence = ai_analysis.get("confidence", 0)
+            ai_labels = ai_analysis.get("labels", [])
             
-            # Use user-provided description if available, otherwise use default
+            # Use user-provided description if available, otherwise use AI-generated
             final_description = description or ai_description
-            
-            # Use AI-determined difficulty, or default to medium
-            difficulty = ai_difficulty
             
             # Validate priority
             if priority.lower() not in ["low", "medium", "high"]:
                 priority = "medium"
             
-            # Step 5: Calculate points for this issue
+            # Step 5: Calculate points for this issue based on AI-determined difficulty
             print("Step 5: Calculating points...")
-            points_assigned = PointsCalculator.calculate_issue_points(difficulty, priority.lower())
+            points_assigned = PointsCalculator.calculate_issue_points(ai_difficulty, priority.lower())
             
             # Step 6: Create issue record in database
             print("Step 6: Creating issue in database...")
@@ -106,7 +107,7 @@ class IssueService:
                 "latitude": latitude,
                 "longitude": longitude,
                 "priority": priority.lower(),
-                "difficulty": difficulty,
+                "difficulty": ai_difficulty,
                 "ai_labels": [label["name"] for label in ai_labels],
                 "ai_confidence_score": ai_confidence,
                 "points_assigned": points_assigned,
@@ -122,8 +123,22 @@ class IssueService:
             
             created_issue = response.data[0]
             
-            # Step 7: Increment user's issues_reported counter
-            await self._increment_user_stat(user_id, "issues_reported", 1)
+            # Step 7: Award points to reporter
+            print("Step 7: Awarding points to reporter...")
+            await self.points_service.award_points(
+                user_id=user_id,
+                points=self.ISSUE_REPORT_POINTS,
+                activity_type="issue_reported",
+                reference_id=created_issue["id"],
+                reference_type="issue",
+                metadata={
+                    "ai_difficulty": ai_difficulty,
+                    "ai_confidence": ai_confidence,
+                    "priority": priority
+                }
+            )
+            
+            print(f"[SUCCESS] Issue created with ID: {created_issue['id']}")
             
             return {
                 "issue": created_issue,
@@ -204,8 +219,7 @@ class IssueService:
             List of nearby issues
         """
         try:
-            # For MVP, we'll fetch all open issues and filter in Python
-            # In production, use PostGIS for better performance
+            # Fetch all open issues
             response = self.supabase.table("issues").select("*").eq("status", "open").execute()
             
             if not response.data:

@@ -2,6 +2,7 @@ from app.database import supabase
 from app.utils.cloudinary_helper import CloudinaryHelper
 from app.utils.ai_service import AIService
 from app.utils.points_calculator import PointsCalculator
+from app.services.point_service import PointsService  # NEW IMPORT
 from datetime import datetime
 from typing import Optional, List
 
@@ -12,6 +13,7 @@ class CompletionService:
         """Initialize services"""
         self.supabase = supabase
         self.ai_service = AIService()
+        self.points_service = PointsService()  # NEW
     
     async def confirm_participation(
         self,
@@ -268,15 +270,20 @@ class CompletionService:
                             "points_earned": points_earned
                         }).eq("id", vol_id).execute()
                         
-                        # Update user's total points
-                        user_resp = self.supabase.table("users").select("total_points").eq("id", user_id_vol).execute()
-                        if user_resp.data:
-                            current_points = user_resp.data[0]["total_points"]
-                            new_total = current_points + points_earned
-                            self.supabase.table("users").update({
-                                "total_points": new_total,
-                                "tasks_completed": self.supabase.table("users").select("tasks_completed").eq("id", user_id_vol).execute().data[0]["tasks_completed"] + 1
-                            }).eq("id", user_id_vol).execute()
+                        # ✅ NEW: Use PointsService instead of manually updating
+                        # This handles: points update, activity logging, badges, cache invalidation
+                        await self.points_service.award_points(
+                            user_id=user_id_vol,
+                            points=points_earned,
+                            activity_type="cleanup_verified",
+                            reference_id=issue_id,
+                            reference_type="issue",
+                            metadata={
+                                "group_id": group_id,
+                                "is_leader": (user_id_vol == user_id),
+                                "volunteer_count": verified_count
+                            }
+                        )
                         
                         distribution[vol_id]["points_earned"] = points_earned
             
