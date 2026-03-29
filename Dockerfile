@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     libxcb1 \
     libx11-6 \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
@@ -23,7 +23,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Pre-download YOLOv8s model so it's baked into the image
-# (avoids downloading at runtime on every cold start)
 RUN python -c "from ultralytics import YOLO; YOLO('yolov8s.pt')"
 
 # Copy the rest of the app
