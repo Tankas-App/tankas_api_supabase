@@ -18,7 +18,11 @@ class Config:
     CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY")
     CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET")
 
-    # --- AI ---
+    # --- Payments ---
+    PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
+    PAYSTACK_BASE_URL = os.getenv("PAYSTACK_BASE_URL", "https://api.paystack.co")
+
+    # --- AI (optional — only needed if using Google Vision, we use YOLOv8 now) ---
     GOOGLE_VISION_CREDENTIALS_PATH = os.getenv("GOOGLE_VISION_CREDENTIALS_PATH")
 
     # --- Validation ---
@@ -32,6 +36,8 @@ class Config:
         raise ValueError("CLOUDINARY_API_KEY not found in .env file")
     if not CLOUDINARY_API_SECRET:
         raise ValueError("CLOUDINARY_API_SECRET not found in .env file")
+    if not PAYSTACK_SECRET_KEY:
+        raise ValueError("PAYSTACK_SECRET_KEY not found in .env file")
 
 
 config = Config()

@@ -13,11 +13,7 @@ from app.routes import (
     collection,
     leaderboards,
 )
-
-
-# ---------------------------------------------------------------------------
-# Lifespan — runs init_db() on startup, close_db() on shutdown
-# ---------------------------------------------------------------------------
+from app.routes import payments
 
 
 @asynccontextmanager
@@ -26,10 +22,6 @@ async def lifespan(app: FastAPI):
     yield
     await close_db()
 
-
-# ---------------------------------------------------------------------------
-# App
-# ---------------------------------------------------------------------------
 
 app = FastAPI(
     title="Tankas API",
@@ -40,7 +32,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten to production domain in Phase 3
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -53,15 +45,7 @@ app.include_router(volunteers.router, prefix="/api")
 app.include_router(completion.router, prefix="/api")
 app.include_router(collection.router, prefix="/api")
 app.include_router(leaderboards.router, prefix="/api")
-
-
-# ---------------------------------------------------------------------------
-# Health checks
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Custom OpenAPI schema — adds Bearer token Authorize button to Swagger UI
-# ---------------------------------------------------------------------------
+app.include_router(payments.router, prefix="/api")
 
 
 def custom_openapi():
@@ -75,7 +59,6 @@ def custom_openapi():
         routes=app.routes,
     )
 
-    # Add the Bearer token security scheme
     schema["components"]["securitySchemes"] = {
         "BearerAuth": {
             "type": "http",
@@ -85,7 +68,6 @@ def custom_openapi():
         }
     }
 
-    # Apply it globally to all endpoints
     for path in schema["paths"].values():
         for method in path.values():
             method.setdefault("security", [{"BearerAuth": []}])
@@ -95,11 +77,6 @@ def custom_openapi():
 
 
 app.openapi = custom_openapi
-
-
-# ---------------------------------------------------------------------------
-# Health checks
-# ---------------------------------------------------------------------------
 
 
 @app.get("/")
