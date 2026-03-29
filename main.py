@@ -13,7 +13,7 @@ from app.routes import (
     collection,
     leaderboards,
 )
-from app.routes import payments, admin
+from app.routes import payments, admin, pledges
 
 
 @asynccontextmanager
@@ -47,6 +47,7 @@ app.include_router(collection.router, prefix="/api")
 app.include_router(leaderboards.router, prefix="/api")
 app.include_router(payments.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
+app.include_router(pledges.router, prefix="/api")
 
 
 def custom_openapi():
