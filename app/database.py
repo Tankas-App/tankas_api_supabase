@@ -44,7 +44,7 @@ async def init_db() -> None:
         max_size=10,  # max 10 concurrent connections (fits Koyeb free tier)
         command_timeout=30,  # seconds before a query is killed
         # asyncpg uses Python's ssl module; pass ssl="require" if Koyeb requires TLS
-        ssl="disable",
+        ssl="require",
     )
     print("[DB] Connection pool created ✅")
 
