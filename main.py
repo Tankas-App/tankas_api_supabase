@@ -13,7 +13,7 @@ from app.routes import (
     collection,
     leaderboards,
 )
-from app.routes import payments
+from app.routes import payments, admin
 
 
 @asynccontextmanager
@@ -26,7 +26,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Tankas API",
     description="Environmental cleanup coordination platform",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -46,6 +46,7 @@ app.include_router(completion.router, prefix="/api")
 app.include_router(collection.router, prefix="/api")
 app.include_router(leaderboards.router, prefix="/api")
 app.include_router(payments.router, prefix="/api")
+app.include_router(admin.router, prefix="/api")
 
 
 def custom_openapi():
@@ -54,7 +55,7 @@ def custom_openapi():
 
     schema = get_openapi(
         title="Tankas API",
-        version="0.2.0",
+        version="0.3.0",
         description="Environmental cleanup coordination platform",
         routes=app.routes,
     )
@@ -81,7 +82,7 @@ app.openapi = custom_openapi
 
 @app.get("/")
 async def root():
-    return {"message": "Tankas API is running", "status": "ok", "version": "0.2.0"}
+    return {"message": "Tankas API is running", "status": "ok", "version": "0.3.0"}
 
 
 @app.get("/health")

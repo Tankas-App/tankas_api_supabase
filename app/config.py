@@ -26,7 +26,12 @@ class Config:
     GMAIL_SENDER_EMAIL = os.getenv("GMAIL_SENDER_EMAIL")
     GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
 
-    # --- AI (optional) ---
+    # --- AI Provider ---
+    # Options: "yolo" (free, default) or "google_vision" (paid, more accurate)
+    # Switch by changing this one line in .env — no code changes needed
+    AI_PROVIDER = os.getenv("AI_PROVIDER", "yolo")
+
+    # Only required when AI_PROVIDER=google_vision
     GOOGLE_VISION_CREDENTIALS_PATH = os.getenv("GOOGLE_VISION_CREDENTIALS_PATH")
 
     # --- Validation ---
@@ -46,6 +51,10 @@ class Config:
         raise ValueError("GMAIL_SENDER_EMAIL not found in .env file")
     if not GMAIL_APP_PASSWORD:
         raise ValueError("GMAIL_APP_PASSWORD not found in .env file")
+    if AI_PROVIDER == "google_vision" and not GOOGLE_VISION_CREDENTIALS_PATH:
+        raise ValueError(
+            "GOOGLE_VISION_CREDENTIALS_PATH required when AI_PROVIDER=google_vision"
+        )
 
 
 config = Config()
