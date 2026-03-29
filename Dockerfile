@@ -22,9 +22,6 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download YOLOv8s model so it's baked into the image
-RUN python -c "from ultralytics import YOLO; YOLO('yolov8s.pt')"
-
 # Copy the rest of the app
 COPY . .
 
