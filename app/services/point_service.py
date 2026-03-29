@@ -1,15 +1,18 @@
+"""
+point_service.py — Points, activity logging, badges, cache invalidation
+"""
+
 from app.database import get_connection
-from app.utils.points_calculator import PointsCalculator
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
-import asyncio
+from typing import Optional, Dict, Any, List
+import json
 
 
 class PointsService:
-    """Handle all points awarding, activity logging, badge checking, and cache invalidation"""
 
-    def __init__(self):
-        pass
+    # ------------------------------------------------------------------
+    # Award points — single entry point for all point transactions
+    # ------------------------------------------------------------------
 
     async def award_points(
         self,
@@ -21,529 +24,335 @@ class PointsService:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Award points to a user and trigger all related actions
-
-        This is the SINGLE source of truth for awarding points.
-        It handles:
-        1. Update user's total_points
-        2. Log the activity
-        3. Check for new badges
-        4. Invalidate leaderboard cache
-        5. Update user stats
-
-        Args:
-            user_id: UUID of user earning points
-            points: Number of points to award
-            activity_type: "issue_reported", "cleanup_verified", "collection_verified", etc.
-            reference_id: ID of related issue/collection/volunteer record
-            reference_type: "issue", "collection", "volunteer"
-            metadata: Additional data to store (optional)
-
-        Returns:
-            Dictionary with:
-            - user_id
-            - points_awarded
-            - new_total_points
-            - badges_unlocked: List of newly earned badges
-            - message
+        Award points to a user and trigger all related actions:
+        1. Update total_points
+        2. Log activity
+        3. Update activity-specific stats
+        4. Check + award badges
+        5. Invalidate leaderboard cache
         """
-        try:
-            # Step 1: Get current user data
-            print(f"[POINTS] Awarding {points} points to {user_id} for {activity_type}")
-            user_response = (
-                self.supabase.table("users").select("*").eq("id", user_id).execute()
-            )
+        async with get_connection() as conn:
 
-            if not user_response.data:
+            # Step 1: Get current points
+            user = await conn.fetchrow(
+                "SELECT id, total_points FROM users WHERE id = $1",
+                user_id,
+            )
+            if not user:
                 raise ValueError("User not found")
 
-            user = user_response.data[0]
-            current_points = user.get("total_points", 0)
-            new_total_points = current_points + points
+            current_points = user["total_points"] or 0
+            new_total = current_points + points
 
-            # Step 2: Update user's total points
-            print(f"[POINTS] Updating points: {current_points} → {new_total_points}")
-            self.supabase.table("users").update(
-                {
-                    "total_points": new_total_points,
-                    "updated_at": datetime.utcnow().isoformat(),
-                }
-            ).eq("id", user_id).execute()
+            # Step 2: Update total_points
+            await conn.execute(
+                "UPDATE users SET total_points = $1, updated_at = NOW() WHERE id = $2",
+                new_total,
+                user_id,
+            )
 
-            # Step 3: Log the activity
-            print(f"[ACTIVITY] Logging {activity_type}")
-            activity_log_data = {
-                "user_id": user_id,
-                "activity_type": activity_type,
-                "activity_date": datetime.utcnow().date().isoformat(),
-                "points_earned": points,
-                "reference_id": reference_id,
-                "reference_type": reference_type,
-                "metadata": metadata or {},
-            }
-            self.supabase.table("user_activity_log").insert(activity_log_data).execute()
+            # Step 3: Log activity
+            await conn.execute(
+                """
+                INSERT INTO user_activity_log
+                    (user_id, activity_type, activity_date, points_earned,
+                     reference_id, reference_type, metadata, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+                """,
+                user_id,
+                activity_type,
+                datetime.utcnow().date(),
+                points,
+                reference_id,
+                reference_type,
+                json.dumps(metadata or {}),
+            )
 
-            # Step 4: Update activity-specific user stats
-            print(f"[STATS] Updating user stats for {activity_type}")
-            await self._update_user_stats(user_id, activity_type)
+            # Step 4: Update activity-specific stats
+            await self._update_user_stats(conn, user_id, activity_type)
 
-            # Step 5: Check for newly earned badges
-            print(f"[BADGES] Checking for new badges")
+            # Step 5: Check badges
             badges_unlocked = await self._check_and_award_badges(
-                user_id, new_total_points
+                conn, user_id, new_total
             )
 
-            # Step 6: Invalidate leaderboard cache
-            print(f"[CACHE] Invalidating leaderboard cache")
-            await self._invalidate_cache(user_id)
+        # Step 6: Invalidate leaderboard cache (separate connection is fine)
+        await self._invalidate_cache(user_id)
 
-            return {
-                "user_id": user_id,
-                "points_awarded": points,
-                "previous_total_points": current_points,
-                "new_total_points": new_total_points,
-                "badges_unlocked": badges_unlocked,
-                "message": (
-                    f"Awarded {points} points! {len(badges_unlocked)} new badge(s) earned!"
-                    if badges_unlocked
-                    else f"Awarded {points} points!"
-                ),
-            }
+        return {
+            "user_id": user_id,
+            "points_awarded": points,
+            "previous_total_points": current_points,
+            "new_total_points": new_total,
+            "badges_unlocked": badges_unlocked,
+            "message": (
+                f"Awarded {points} points! {len(badges_unlocked)} new badge(s) earned!"
+                if badges_unlocked
+                else f"Awarded {points} points!"
+            ),
+        }
 
-        except ValueError as e:
-            raise ValueError(str(e))
-        except Exception as e:
-            raise Exception(f"Failed to award points: {str(e)}")
+    # ------------------------------------------------------------------
+    # Update user stats based on activity type
+    # ------------------------------------------------------------------
 
-    async def _update_user_stats(self, user_id: str, activity_type: str) -> None:
-        """
-        Update user statistics based on activity type
+    async def _update_user_stats(self, conn, user_id: str, activity_type: str) -> None:
+        today = datetime.utcnow().date()
 
-        Args:
-            user_id: User UUID
-            activity_type: Type of activity performed
-        """
-        try:
-            # Get current user stats
-            user_response = (
-                self.supabase.table("users")
-                .select(
-                    "issues_reported,tasks_completed,total_kg_collected,total_verifications_accepted,last_volunteer_date,volunteer_streak"
-                )
-                .eq("id", user_id)
-                .execute()
+        if activity_type == "issue_reported":
+            await conn.execute(
+                "UPDATE users SET issues_reported = issues_reported + 1 WHERE id = $1",
+                user_id,
             )
 
-            if not user_response.data:
-                return
+        elif activity_type in ("cleanup_verified", "collection_verified"):
+            user = await conn.fetchrow(
+                "SELECT last_volunteer_date, volunteer_streak FROM users WHERE id = $1",
+                user_id,
+            )
+            streak = user["volunteer_streak"] or 0
+            last = user["last_volunteer_date"]
 
-            user = user_response.data[0]
-            update_data = {}
-            today = datetime.utcnow().date()
+            if last:
+                diff = (today - last).days
+                new_streak = streak + 1 if diff == 1 else 1
+            else:
+                new_streak = 1
 
-            # Update based on activity type
-            if activity_type == "issue_reported":
-                update_data["issues_reported"] = (
-                    user.get("issues_reported", 0) or 0
-                ) + 1
-
-            elif activity_type == "cleanup_verified":
-                update_data["tasks_completed"] = (
-                    user.get("tasks_completed", 0) or 0
-                ) + 1
-                # Update streak
-                last_volunteer_date = user.get("last_volunteer_date")
-                current_streak = user.get("volunteer_streak", 0) or 0
-
-                if last_volunteer_date:
-                    last_date = (
-                        datetime.strptime(last_volunteer_date, "%Y-%m-%d").date()
-                        if isinstance(last_volunteer_date, str)
-                        else last_volunteer_date
-                    )
-                    if (today - last_date).days == 1:
-                        # Consecutive day! Increment streak
-                        update_data["volunteer_streak"] = current_streak + 1
-                    elif (today - last_date).days > 1:
-                        # Streak broken, reset to 1
-                        update_data["volunteer_streak"] = 1
-                else:
-                    # First time
-                    update_data["volunteer_streak"] = 1
-
-                update_data["last_volunteer_date"] = today.isoformat()
-
-            elif activity_type == "collection_verified":
-                update_data["tasks_completed"] = (
-                    user.get("tasks_completed", 0) or 0
-                ) + 1
-                # For collections, we update kg in collection_service
-                # But we can update streak here too
-                last_volunteer_date = user.get("last_volunteer_date")
-                current_streak = user.get("volunteer_streak", 0) or 0
-
-                if last_volunteer_date:
-                    last_date = (
-                        datetime.strptime(last_volunteer_date, "%Y-%m-%d").date()
-                        if isinstance(last_volunteer_date, str)
-                        else last_volunteer_date
-                    )
-                    if (today - last_date).days == 1:
-                        update_data["volunteer_streak"] = current_streak + 1
-                    elif (today - last_date).days > 1:
-                        update_data["volunteer_streak"] = 1
-                else:
-                    update_data["volunteer_streak"] = 1
-
-                update_data["last_volunteer_date"] = today.isoformat()
-
-            # Apply updates
-            if update_data:
-                self.supabase.table("users").update(update_data).eq(
-                    "id", user_id
-                ).execute()
-
-        except Exception as e:
-            print(f"Warning: Failed to update user stats: {str(e)}")
-
-    async def _check_and_award_badges(self, user_id: str, current_points: int) -> list:
-        """
-        Check if user qualifies for any new badges and award them
-
-        Args:
-            user_id: User UUID
-            current_points: User's current total points
-
-        Returns:
-            List of newly earned badge types
-        """
-        try:
-            badges_unlocked = []
-
-            # Get all badge definitions
-            badges_response = (
-                self.supabase.table("badge_definitions").select("*").execute()
+            await conn.execute(
+                """
+                UPDATE users
+                SET tasks_completed      = tasks_completed + 1,
+                    volunteer_streak     = $1,
+                    last_volunteer_date  = $2,
+                    updated_at           = NOW()
+                WHERE id = $3
+                """,
+                new_streak,
+                today,
+                user_id,
             )
 
-            if not badges_response.data:
-                return badges_unlocked
+    # ------------------------------------------------------------------
+    # Badge checking
+    # ------------------------------------------------------------------
 
-            # Get user's current badges (to avoid duplicates)
-            user_badges_response = (
-                self.supabase.table("user_badges")
-                .select("badge_type")
-                .eq("user_id", user_id)
-                .execute()
-            )
-            user_badge_types = set(
-                b["badge_type"] for b in (user_badges_response.data or [])
-            )
+    async def _check_and_award_badges(
+        self, conn, user_id: str, current_points: int
+    ) -> List[str]:
+        badges_unlocked = []
 
-            # Get user's current stats
-            user_response = (
-                self.supabase.table("users").select("*").eq("id", user_id).execute()
-            )
-            user = user_response.data[0]
-
-            # Check each badge definition
-            for badge_def in badges_response.data:
-                badge_type = badge_def["badge_type"]
-
-                # Skip if user already has this permanent badge
-                if badge_def["is_permanent"] and badge_type in user_badge_types:
-                    continue
-
-                # Check unlock condition
-                condition = badge_def["unlock_condition"]
-                condition_met = await self._check_badge_condition(
-                    user, condition, user_id
-                )
-
-                if condition_met:
-                    # Award the badge
-                    badge_data = {
-                        "user_id": user_id,
-                        "badge_type": badge_type,
-                        "is_permanent": badge_def["is_permanent"],
-                        "earned_at": datetime.utcnow().isoformat(),
-                        "current_week_earned": True,
-                        "week_start_date": self._get_week_start_date().isoformat(),
-                        "metadata": {"condition": condition},
-                    }
-
-                    self.supabase.table("user_badges").insert(badge_data).execute()
-                    badges_unlocked.append(badge_type)
-                    print(f"[BADGE] User {user_id} unlocked badge: {badge_type}")
-
+        # Get all badge definitions
+        badge_defs = await conn.fetch("SELECT * FROM badge_definitions")
+        if not badge_defs:
             return badges_unlocked
 
-        except Exception as e:
-            print(f"Warning: Failed to check badges: {str(e)}")
-            return []
+        # Get badges user already has
+        existing = await conn.fetch(
+            "SELECT badge_type FROM user_badges WHERE user_id = $1",
+            user_id,
+        )
+        owned = {r["badge_type"] for r in existing}
+
+        # Get full user record for condition checks
+        user = await conn.fetchrow("SELECT * FROM users WHERE id = $1", user_id)
+
+        week_start = self._get_week_start_date()
+
+        for badge in badge_defs:
+            badge_type = badge["badge_type"]
+
+            # Skip permanent badges user already owns
+            if badge["is_permanent"] and badge_type in owned:
+                continue
+
+            condition = badge["unlock_condition"]
+            if isinstance(condition, str):
+                condition = json.loads(condition)
+
+            met = await self._check_badge_condition(conn, user, condition, user_id)
+
+            if met:
+                await conn.execute(
+                    """
+                    INSERT INTO user_badges
+                        (user_id, badge_type, is_permanent, earned_at,
+                         current_week_earned, week_start_date, metadata)
+                    VALUES ($1, $2, $3, NOW(), TRUE, $4, $5)
+                    """,
+                    user_id,
+                    badge_type,
+                    badge["is_permanent"],
+                    week_start,
+                    json.dumps({"condition": condition}),
+                )
+                badges_unlocked.append(badge_type)
+
+        return badges_unlocked
 
     async def _check_badge_condition(
-        self, user: Dict, condition: Dict, user_id: str
+        self, conn, user, condition: Dict, user_id: str
     ) -> bool:
-        """
-        Check if user meets a badge unlock condition
+        condition_type = condition.get("type")
+        threshold = condition.get("threshold", 0)
 
-        Args:
-            user: User data dict
-            condition: Badge unlock condition from badge_definitions
-            user_id: User UUID (for activity log queries)
+        if condition_type == "points":
+            return (user["total_points"] or 0) >= threshold
 
-        Returns:
-            True if condition is met, False otherwise
-        """
-        try:
-            condition_type = condition.get("type")
-            threshold = condition.get("threshold")
+        elif condition_type == "issues_reported":
+            return (user["issues_reported"] or 0) >= threshold
 
-            # POINTS-BASED CONDITIONS
-            if condition_type == "points":
-                return user.get("total_points", 0) >= threshold
+        elif condition_type == "cleanups":
+            count = await conn.fetchval(
+                "SELECT COUNT(*) FROM user_activity_log WHERE user_id=$1 AND activity_type='cleanup_verified'",
+                user_id,
+            )
+            return count >= threshold
 
-            # ISSUE REPORTING
-            elif condition_type == "issues_reported":
-                return user.get("issues_reported", 0) >= threshold
+        elif condition_type == "group_cleanups":
+            count = await conn.fetchval(
+                "SELECT COUNT(*) FROM volunteers WHERE user_id=$1 AND solo_work=FALSE AND verified=TRUE",
+                user_id,
+            )
+            return count >= threshold
 
-            # CLEANUP COMPLETION
-            elif condition_type == "cleanups":
-                # Count completed cleanups from activity log
-                activity_response = (
-                    self.supabase.table("user_activity_log")
-                    .select("id")
-                    .eq("user_id", user_id)
-                    .eq("activity_type", "cleanup_verified")
-                    .execute()
-                )
-                count = len(activity_response.data or [])
-                return count >= threshold
+        elif condition_type == "kg_collected":
+            return float(user["total_kg_collected"] or 0) >= threshold
 
-            # GROUP CLEANUPS
-            elif condition_type == "group_cleanups":
-                # Count group cleanups (where user was not solo)
-                volunteers_response = (
-                    self.supabase.table("volunteers")
-                    .select("id")
-                    .eq("user_id", user_id)
-                    .eq("solo_work", False)
-                    .eq("verified", True)
-                    .execute()
-                )
-                count = len(volunteers_response.data or [])
-                return count >= threshold
+        elif condition_type == "streak":
+            return (user["volunteer_streak"] or 0) >= condition.get("days", 0)
 
-            # KG COLLECTED
-            elif condition_type == "kg_collected":
-                return user.get("total_kg_collected", 0) >= threshold
+        elif condition_type == "badges_count":
+            count = await conn.fetchval(
+                "SELECT COUNT(*) FROM user_badges WHERE user_id=$1 AND is_permanent=TRUE",
+                user_id,
+            )
+            return count >= threshold
 
-            # VERIFICATIONS ACCEPTED
-            elif condition_type == "verifications":
-                return user.get("total_verifications_accepted", 0) >= threshold
+        elif condition_type == "weekly_points":
+            week_start = self._get_week_start_date()
+            total = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(points_earned), 0)
+                FROM user_activity_log
+                WHERE user_id=$1 AND activity_date >= $2
+                """,
+                user_id,
+                week_start,
+            )
+            return total >= threshold
 
-            # STREAK
-            elif condition_type == "streak":
-                streak_days = condition.get("days", 0)
-                return user.get("volunteer_streak", 0) >= streak_days
+        elif condition_type == "weekly_cleanups":
+            week_start = self._get_week_start_date()
+            count = await conn.fetchval(
+                """
+                SELECT COUNT(*) FROM user_activity_log
+                WHERE user_id=$1 AND activity_type='cleanup_verified' AND activity_date >= $2
+                """,
+                user_id,
+                week_start,
+            )
+            return count >= threshold
 
-            # BADGES COUNT (for Legend badge)
-            elif condition_type == "badges_count":
-                badges_response = (
-                    self.supabase.table("user_badges")
-                    .select("id")
-                    .eq("user_id", user_id)
-                    .eq("is_permanent", True)
-                    .execute()
-                )
-                count = len(badges_response.data or [])
-                return count >= threshold
+        return False
 
-            # WEEKLY CONDITIONS
-            elif condition_type == "weekly_rank":
-                # This is checked separately in leaderboard service
-                return False
-
-            elif condition_type == "weekly_points":
-                # Calculate points earned this week
-                week_start = self._get_week_start_date()
-                activity_response = (
-                    self.supabase.table("user_activity_log")
-                    .select("points_earned")
-                    .eq("user_id", user_id)
-                    .gte("activity_date", week_start.isoformat())
-                    .execute()
-                )
-                weekly_points = sum(
-                    a.get("points_earned", 0) for a in (activity_response.data or [])
-                )
-                return weekly_points >= threshold
-
-            elif condition_type == "weekly_cleanups":
-                # Count cleanups this week
-                week_start = self._get_week_start_date()
-                activity_response = (
-                    self.supabase.table("user_activity_log")
-                    .select("id")
-                    .eq("user_id", user_id)
-                    .eq("activity_type", "cleanup_verified")
-                    .gte("activity_date", week_start.isoformat())
-                    .execute()
-                )
-                count = len(activity_response.data or [])
-                return count >= threshold
-
-            return False
-
-        except Exception as e:
-            print(f"Warning: Failed to check badge condition: {str(e)}")
-            return False
+    # ------------------------------------------------------------------
+    # Cache invalidation
+    # ------------------------------------------------------------------
 
     async def _invalidate_cache(self, user_id: str) -> None:
-        """
-        Invalidate leaderboard cache entries related to this user
-
-        Args:
-            user_id: User UUID
-        """
         try:
-            # Delete all cache entries for this user
-            # This forces fresh calculation on next request
-            self.supabase.table("leaderboard_cache").delete().eq(
-                "user_id", user_id
-            ).execute()
-            print(f"[CACHE] Invalidated cache for user {user_id}")
-
+            async with get_connection() as conn:
+                await conn.execute(
+                    "DELETE FROM leaderboard_cache WHERE cached_at >= NOW() - INTERVAL '5 minutes'"
+                )
         except Exception as e:
-            print(f"Warning: Failed to invalidate cache: {str(e)}")
+            print(f"[WARNING] Cache invalidation failed: {e}")
 
-    @staticmethod
-    def _get_week_start_date() -> datetime:
-        """
-        Get the start date of the current week (Monday)
-
-        Returns:
-            Monday of the current week as datetime.date
-        """
-        today = datetime.utcnow().date()
-        # Monday is 0, Sunday is 6
-        days_since_monday = today.weekday()
-        week_start = today - timedelta(days=days_since_monday)
-        return week_start
+    # ------------------------------------------------------------------
+    # Weekly badge recalculation
+    # ------------------------------------------------------------------
 
     async def recalculate_weekly_badges(self) -> Dict[str, int]:
-        """
-        Recalculate weekly badges for ALL users
+        counts = {"momentum": 0, "on_fire": 0}
+        week_start = self._get_week_start_date()
 
-        This should be run once per week (on Monday at 00:00)
+        async with get_connection() as conn:
 
-        Returns:
-            Dict with counts of badges awarded
-        """
-        try:
-            print("[WEEKLY] Starting weekly badge recalculation...")
+            # Mark all previous weekly badges as not current
+            await conn.execute(
+                "UPDATE user_badges SET current_week_earned=FALSE WHERE is_permanent=FALSE"
+            )
 
-            counts = {"rising_star": 0, "momentum": 0, "on_fire": 0}
+            users = await conn.fetch("SELECT id FROM users")
 
-            # Step 1: Mark all previous weekly badges as no longer current
-            self.supabase.table("user_badges").update(
-                {"current_week_earned": False}
-            ).eq("is_permanent", False).execute()
+            for row in users:
+                uid = str(row["id"])
 
-            # Step 2: Get all users
-            users_response = self.supabase.table("users").select("id").execute()
-            user_ids = [u["id"] for u in (users_response.data or [])]
-
-            print(f"[WEEKLY] Processing {len(user_ids)} users...")
-
-            # Step 3: For each user, check weekly badge conditions
-            for user_id in user_ids:
-                user_response = (
-                    self.supabase.table("users").select("*").eq("id", user_id).execute()
+                # Momentum — 100+ points this week
+                weekly_pts = await conn.fetchval(
+                    """
+                    SELECT COALESCE(SUM(points_earned), 0)
+                    FROM user_activity_log
+                    WHERE user_id=$1 AND activity_date >= $2
+                    """,
+                    uid,
+                    week_start,
                 )
-                if not user_response.data:
-                    continue
-
-                user = user_response.data[0]
-                week_start = self._get_week_start_date()
-
-                # Check Rising Star (top 10 in points this week)
-                # This will be handled by leaderboard service, just ensure badge exists
-
-                # Check Momentum (100+ points this week)
-                activity_response = (
-                    self.supabase.table("user_activity_log")
-                    .select("points_earned")
-                    .eq("user_id", user_id)
-                    .gte("activity_date", week_start.isoformat())
-                    .execute()
-                )
-                weekly_points = sum(
-                    a.get("points_earned", 0) for a in (activity_response.data or [])
-                )
-
-                if weekly_points >= 100:
-                    # Award momentum badge
-                    existing = (
-                        self.supabase.table("user_badges")
-                        .select("id")
-                        .eq("user_id", user_id)
-                        .eq("badge_type", "momentum")
-                        .gte("earned_at", week_start.isoformat())
-                        .execute()
+                if weekly_pts >= 100:
+                    exists = await conn.fetchval(
+                        "SELECT id FROM user_badges WHERE user_id=$1 AND badge_type='momentum' AND week_start_date=$2",
+                        uid,
+                        week_start,
                     )
-                    if not existing.data:
-                        self.supabase.table("user_badges").insert(
-                            {
-                                "user_id": user_id,
-                                "badge_type": "momentum",
-                                "is_permanent": False,
-                                "earned_at": datetime.utcnow().isoformat(),
-                                "current_week_earned": True,
-                                "week_start_date": week_start.isoformat(),
-                                "metadata": {"weekly_points": weekly_points},
-                            }
-                        ).execute()
+                    if not exists:
+                        await conn.execute(
+                            """
+                            INSERT INTO user_badges
+                                (user_id, badge_type, is_permanent, earned_at, current_week_earned, week_start_date, metadata)
+                            VALUES ($1, 'momentum', FALSE, NOW(), TRUE, $2, $3)
+                            """,
+                            uid,
+                            week_start,
+                            json.dumps({"weekly_points": weekly_pts}),
+                        )
                         counts["momentum"] += 1
 
-                # Check On Fire (3+ cleanups this week)
-                activity_response = (
-                    self.supabase.table("user_activity_log")
-                    .select("id")
-                    .eq("user_id", user_id)
-                    .eq("activity_type", "cleanup_verified")
-                    .gte("activity_date", week_start.isoformat())
-                    .execute()
+                # On Fire — 3+ cleanups this week
+                cleanups = await conn.fetchval(
+                    """
+                    SELECT COUNT(*) FROM user_activity_log
+                    WHERE user_id=$1 AND activity_type='cleanup_verified' AND activity_date >= $2
+                    """,
+                    uid,
+                    week_start,
                 )
-                cleanup_count = len(activity_response.data or [])
-
-                if cleanup_count >= 3:
-                    # Award on_fire badge
-                    existing = (
-                        self.supabase.table("user_badges")
-                        .select("id")
-                        .eq("user_id", user_id)
-                        .eq("badge_type", "on_fire")
-                        .gte("earned_at", week_start.isoformat())
-                        .execute()
+                if cleanups >= 3:
+                    exists = await conn.fetchval(
+                        "SELECT id FROM user_badges WHERE user_id=$1 AND badge_type='on_fire' AND week_start_date=$2",
+                        uid,
+                        week_start,
                     )
-                    if not existing.data:
-                        self.supabase.table("user_badges").insert(
-                            {
-                                "user_id": user_id,
-                                "badge_type": "on_fire",
-                                "is_permanent": False,
-                                "earned_at": datetime.utcnow().isoformat(),
-                                "current_week_earned": True,
-                                "week_start_date": week_start.isoformat(),
-                                "metadata": {"weekly_cleanups": cleanup_count},
-                            }
-                        ).execute()
+                    if not exists:
+                        await conn.execute(
+                            """
+                            INSERT INTO user_badges
+                                (user_id, badge_type, is_permanent, earned_at, current_week_earned, week_start_date, metadata)
+                            VALUES ($1, 'on_fire', FALSE, NOW(), TRUE, $2, $3)
+                            """,
+                            uid,
+                            week_start,
+                            json.dumps({"weekly_cleanups": cleanups}),
+                        )
                         counts["on_fire"] += 1
 
-            print(f"[WEEKLY] Completed! Awarded: {counts}")
-            return counts
+        return counts
 
-        except Exception as e:
-            print(f"Error in weekly badge recalculation: {str(e)}")
-            return {}
+    # ------------------------------------------------------------------
+    # Helper
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _get_week_start_date():
+        today = datetime.utcnow().date()
+        return today - timedelta(days=today.weekday())

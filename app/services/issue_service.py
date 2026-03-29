@@ -135,7 +135,7 @@ class IssueService:
 
         print(f"[SUCCESS] Issue created: {issue['id']}")
         return {
-            "issue": dict(issue),
+            "issue": self._serialize(issue),
             "ai_analysis": {
                 "difficulty": ai_difficulty,
                 "description": ai_description,

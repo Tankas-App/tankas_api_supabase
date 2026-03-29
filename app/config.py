@@ -32,8 +32,6 @@ class Config:
         raise ValueError("CLOUDINARY_API_KEY not found in .env file")
     if not CLOUDINARY_API_SECRET:
         raise ValueError("CLOUDINARY_API_SECRET not found in .env file")
-    if not GOOGLE_VISION_CREDENTIALS_PATH:
-        raise ValueError("GOOGLE_VISION_CREDENTIALS_PATH not found in .env file")
 
 
 config = Config()

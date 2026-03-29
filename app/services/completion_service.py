@@ -1,198 +1,135 @@
+"""
+completion_service.py — Issue completion, verification, points distribution
+"""
+
 from app.database import get_connection
 from app.utils.cloudinary_helper import CloudinaryHelper
-from app.utils.ai_service import AIService
 from app.utils.points_calculator import PointsCalculator
-from app.services.point_service import PointsService  # NEW IMPORT
+from app.services.point_service import PointsService
 from datetime import datetime
-from typing import Optional, List
+from typing import List
 
 
 class CompletionService:
-    """Handle issue completion, work verification, and points distribution"""
 
     def __init__(self):
-        pass
-        self.ai_service = AIService()
-        self.points_service = PointsService()  # NEW
+        self.points_service = PointsService()
+
+    # ------------------------------------------------------------------
+    # Confirm participation
+    # ------------------------------------------------------------------
 
     async def confirm_participation(
         self, user_id: str, issue_id: str, group_id: str
     ) -> dict:
-        """
-        Volunteer confirms they participated in the cleanup
 
-        Args:
-            user_id: UUID of volunteer
-            issue_id: UUID of issue worked on
-            group_id: UUID of group they worked with
-
-        Returns:
-            Confirmation message
-        """
-        try:
-            # Get volunteer record
-            vol_response = (
-                self.supabase.table("volunteers")
-                .select("*")
-                .eq("user_id", user_id)
-                .eq("issue_id", issue_id)
-                .execute()
+        async with get_connection() as conn:
+            vol = await conn.fetchrow(
+                "SELECT id FROM volunteers WHERE user_id=$1 AND issue_id=$2",
+                user_id,
+                issue_id,
             )
-
-            if not vol_response.data:
+            if not vol:
                 raise ValueError("Volunteer record not found")
 
-            volunteer = vol_response.data[0]
+        return {
+            "message": f"You've confirmed participation on {issue_id}",
+            "volunteer_id": str(vol["id"]),
+            "status": "awaiting_leader_verification",
+        }
 
-            # Mark as participation confirmed (we'll use a simple flag)
-            # This prepares them for verification by leader
-
-            return {
-                "message": f"You've confirmed participation on {issue_id}",
-                "volunteer_id": volunteer["id"],
-                "status": "awaiting_leader_verification",
-            }
-
-        except ValueError as e:
-            raise ValueError(str(e))
-        except Exception as e:
-            raise Exception(f"Failed to confirm participation: {str(e)}")
+    # ------------------------------------------------------------------
+    # Complete issue (leader marks done + uploads photo)
+    # ------------------------------------------------------------------
 
     async def complete_issue(
-        self, user_id: str, issue_id: str, group_id: str, photo_bytes: bytes
+        self,
+        user_id: str,
+        issue_id: str,
+        group_id: str,
+        photo_bytes: bytes,
     ) -> dict:
-        """
-        Leader marks issue as complete and uploads cleanup photo
 
-        Flow:
-        1. Verify user is group leader
-        2. Upload cleanup photo to Cloudinary
-        3. Run AI verification comparing original photo to cleanup photo
-        4. Set verification status based on AI confidence
-        5. Mark issue as resolved
+        async with get_connection() as conn:
 
-        Args:
-            user_id: UUID of user (must be leader)
-            issue_id: UUID of issue
-            group_id: UUID of group
-            photo_bytes: Cleanup photo as bytes
-
-        Returns:
-            Completion status with verification details
-        """
-        try:
-            # Step 1: Verify user is leader
-            print("Step 1: Verifying leader status...")
-            vol_response = (
-                self.supabase.table("volunteers")
-                .select("*")
-                .eq("user_id", user_id)
-                .eq("group_id", group_id)
-                .execute()
+            # Verify leader
+            vol = await conn.fetchrow(
+                "SELECT * FROM volunteers WHERE user_id=$1 AND group_id=$2",
+                user_id,
+                group_id,
             )
-
-            if not vol_response.data or len(vol_response.data) == 0:
+            if not vol:
                 raise ValueError("You're not part of this group")
-
-            volunteer = vol_response.data[0]
-            if not volunteer["is_leader"]:
+            if not vol["is_leader"]:
                 raise ValueError("Only the group leader can mark issue as complete")
 
-            # Step 2: Get original issue photo
-            print("Step 2: Fetching original issue...")
-            issue_response = (
-                self.supabase.table("issues").select("*").eq("id", issue_id).execute()
+            # Get issue
+            issue = await conn.fetchrow(
+                "SELECT * FROM issues WHERE id=$1",
+                issue_id,
             )
-
-            if not issue_response.data:
+            if not issue:
                 raise ValueError("Issue not found")
 
-            issue = issue_response.data[0]
-            original_photo_url = issue["picture_url"]
-
-            # Step 3: Upload cleanup photo
-            print("Step 3: Uploading cleanup photo...")
+            # Upload cleanup photo
             cleanup_photo_url = await CloudinaryHelper.upload_photo(
                 photo_bytes, folder=f"tankas-completions/{issue_id}"
             )
 
-            # Step 4: AI Verification (compare photos)
-            print("Step 4: Running AI verification...")
-            # TODO: Download photos and run AI comparison
-            # For MVP, we'll use a simple confidence score
-            ai_confidence = 85.0  # Default confidence for MVP
+            # AI confidence (MVP default — real comparison in a later phase)
+            ai_confidence = 85.0
+            verification_status = "verified"
+            message = "Cleanup verified! Points will be distributed shortly."
 
-            if ai_confidence >= 80:
-                verification_status = "verified"
-                message = "Cleanup verified! Points will be distributed shortly."
-            elif ai_confidence >= 50:
-                verification_status = "pending_review"
-                message = "Cleanup verification pending admin review. Points will be awarded once confirmed."
-            else:
-                verification_status = "rejected"
-                message = "Photo doesn't match original issue. Please try again."
-
-            # Step 5: Mark issue as resolved
-            print("Step 5: Updating issue status...")
-            update_data = {
-                "status": "resolved",
-                "resolved_by": user_id,
-                "resolved_at": datetime.utcnow().isoformat(),
-                "resolution_picture_url": cleanup_photo_url,
-            }
-
-            self.supabase.table("issues").update(update_data).eq(
-                "id", issue_id
-            ).execute()
-
-            # Get all volunteers in this group for response
-            volunteers_response = (
-                self.supabase.table("volunteers")
-                .select("*")
-                .eq("group_id", group_id)
-                .execute()
+            # Mark issue as resolved
+            await conn.execute(
+                """
+                UPDATE issues
+                SET status                 = 'resolved',
+                    resolved_by            = $1,
+                    resolved_at            = NOW(),
+                    resolution_picture_url = $2,
+                    updated_at             = NOW()
+                WHERE id = $3
+                """,
+                user_id,
+                cleanup_photo_url,
+                issue_id,
             )
 
-            volunteer_list = []
-            if volunteers_response.data:
-                for vol in volunteers_response.data:
-                    user_resp = (
-                        self.supabase.table("users")
-                        .select("username")
-                        .eq("id", vol["user_id"])
-                        .execute()
-                    )
-                    username = (
-                        user_resp.data[0]["username"] if user_resp.data else "Unknown"
-                    )
+            # Build volunteer list for response
+            volunteers_rows = await conn.fetch(
+                "SELECT v.*, u.username FROM volunteers v JOIN users u ON u.id = v.user_id WHERE v.group_id=$1",
+                group_id,
+            )
 
-                    volunteer_list.append(
-                        {
-                            "volunteer_id": vol["id"],
-                            "user_id": vol["user_id"],
-                            "username": username,
-                            "participated": False,  # Not yet confirmed
-                            "verified": False,  # Not yet verified by leader
-                            "points_earned": 0,
-                            "status": "awaiting_confirmation",
-                        }
-                    )
-
-            return {
-                "issue_id": issue_id,
-                "group_id": group_id,
-                "status": "resolved",
-                "verification_photo_url": cleanup_photo_url,
-                "verification_status": verification_status,
-                "ai_confidence": ai_confidence,
-                "message": message,
-                "volunteers": volunteer_list,
+        volunteer_list = [
+            {
+                "volunteer_id": str(v["id"]),
+                "user_id": str(v["user_id"]),
+                "username": v["username"],
+                "participated": False,
+                "verified": False,
+                "points_earned": 0,
+                "status": "awaiting_confirmation",
             }
+            for v in volunteers_rows
+        ]
 
-        except ValueError as e:
-            raise ValueError(str(e))
-        except Exception as e:
-            raise Exception(f"Failed to complete issue: {str(e)}")
+        return {
+            "issue_id": issue_id,
+            "group_id": group_id,
+            "status": "resolved",
+            "verification_photo_url": cleanup_photo_url,
+            "verification_status": verification_status,
+            "ai_confidence": ai_confidence,
+            "message": message,
+            "volunteers": volunteer_list,
+        }
+
+    # ------------------------------------------------------------------
+    # Verify volunteers + distribute points
+    # ------------------------------------------------------------------
 
     async def verify_volunteers(
         self,
@@ -201,149 +138,106 @@ class CompletionService:
         group_id: str,
         verified_volunteer_ids: List[str],
     ) -> dict:
-        """
-        Leader confirms which volunteers actually worked
-        Then distribute points to verified volunteers
 
-        Args:
-            user_id: UUID of leader
-            issue_id: UUID of issue
-            group_id: UUID of group
-            verified_volunteer_ids: List of volunteer IDs who showed up
+        async with get_connection() as conn:
 
-        Returns:
-            Points distribution summary
-        """
-        try:
-            # Step 1: Verify user is leader
-            print("Step 1: Verifying leader...")
-            vol_response = (
-                self.supabase.table("volunteers")
-                .select("*")
-                .eq("user_id", user_id)
-                .eq("group_id", group_id)
-                .execute()
+            # Verify leader
+            leader_vol = await conn.fetchrow(
+                "SELECT * FROM volunteers WHERE user_id=$1 AND group_id=$2",
+                user_id,
+                group_id,
             )
-
-            if not vol_response.data or not vol_response.data[0]["is_leader"]:
+            if not leader_vol or not leader_vol["is_leader"]:
                 raise ValueError("Only the group leader can verify volunteers")
 
-            # Step 2: Get issue details
-            print("Step 2: Fetching issue...")
-            issue_response = (
-                self.supabase.table("issues").select("*").eq("id", issue_id).execute()
+            # Get issue points
+            issue = await conn.fetchrow(
+                "SELECT points_assigned FROM issues WHERE id=$1",
+                issue_id,
             )
-            if not issue_response.data:
+            if not issue:
                 raise ValueError("Issue not found")
 
-            issue = issue_response.data[0]
             total_points = issue["points_assigned"]
 
-            # Step 3: Mark volunteers as verified/not verified
-            print("Step 3: Marking verified volunteers...")
-            distribution = {}
-
             # Get all volunteers in group
-            all_volunteers = (
-                self.supabase.table("volunteers")
-                .select("*")
-                .eq("group_id", group_id)
-                .execute()
+            all_vols = await conn.fetch(
+                "SELECT * FROM volunteers WHERE group_id=$1",
+                group_id,
             )
 
+            distribution = {}
             verified_count = 0
-            for vol in all_volunteers.data:
-                is_verified = vol["id"] in verified_volunteer_ids
+
+            for vol in all_vols:
+                vol_id = str(vol["id"])
+                is_verified = vol_id in verified_volunteer_ids
 
                 if is_verified:
                     verified_count += 1
-                    # Mark as verified
-                    self.supabase.table("volunteers").update(
-                        {
-                            "verified": True,
-                            "leader_validated": True,
-                            "verified_at": datetime.utcnow().isoformat(),
-                        }
-                    ).eq("id", vol["id"]).execute()
-
-                    distribution[vol["id"]] = {
-                        "user_id": vol["user_id"],
-                        "verified": True,
-                    }
+                    await conn.execute(
+                        "UPDATE volunteers SET verified=TRUE, leader_validated=TRUE, verified_at=NOW() WHERE id=$1",
+                        vol_id,
+                    )
                 else:
-                    # Mark as not verified
-                    self.supabase.table("volunteers").update(
-                        {"verified": False, "leader_validated": True}
-                    ).eq("id", vol["id"]).execute()
+                    await conn.execute(
+                        "UPDATE volunteers SET verified=FALSE, leader_validated=TRUE WHERE id=$1",
+                        vol_id,
+                    )
 
-                    distribution[vol["id"]] = {
-                        "user_id": vol["user_id"],
-                        "verified": False,
-                    }
+                distribution[vol_id] = {
+                    "user_id": str(vol["user_id"]),
+                    "verified": is_verified,
+                }
 
-            # Step 4: Calculate and distribute points
-            print("Step 4: Distributing points...")
-            if verified_count > 0:
-                distribution_info = PointsCalculator.distribute_points_with_leader(
-                    total_points, verified_count, user_id
+        # Distribute points outside the connection
+        points_per_volunteer = 0
+        leader_bonus = 0
+
+        if verified_count > 0:
+            dist_info = PointsCalculator.distribute_points_with_leader(
+                total_points, verified_count, user_id
+            )
+            points_per_volunteer = dist_info["points_per_volunteer"]
+            leader_bonus = dist_info["leader_bonus"]
+
+            for vol_id, vol_data in distribution.items():
+                if not vol_data["verified"]:
+                    continue
+
+                is_leader_vol = vol_data["user_id"] == user_id
+                points_earned = points_per_volunteer + (
+                    leader_bonus if is_leader_vol else 0
                 )
 
-                points_per_volunteer = distribution_info["points_per_volunteer"]
-                leader_bonus = distribution_info["leader_bonus"]
+                async with get_connection() as conn:
+                    await conn.execute(
+                        "UPDATE volunteers SET points_earned=$1 WHERE id=$2",
+                        points_earned,
+                        vol_id,
+                    )
 
-                # Award points to each verified volunteer
-                for vol_id, vol_data in distribution.items():
-                    if vol_data["verified"]:
-                        user_id_vol = vol_data["user_id"]
+                await self.points_service.award_points(
+                    user_id=vol_data["user_id"],
+                    points=points_earned,
+                    activity_type="cleanup_verified",
+                    reference_id=issue_id,
+                    reference_type="issue",
+                    metadata={
+                        "group_id": group_id,
+                        "is_leader": is_leader_vol,
+                        "volunteer_count": verified_count,
+                    },
+                )
+                distribution[vol_id]["points_earned"] = points_earned
 
-                        # Determine points (leader gets bonus)
-                        if user_id_vol == user_id:
-                            points_earned = points_per_volunteer + leader_bonus
-                        else:
-                            points_earned = points_per_volunteer
-
-                        # Update volunteer record
-                        self.supabase.table("volunteers").update(
-                            {"points_earned": points_earned}
-                        ).eq("id", vol_id).execute()
-
-                        # ✅ NEW: Use PointsService instead of manually updating
-                        # This handles: points update, activity logging, badges, cache invalidation
-                        await self.points_service.award_points(
-                            user_id=user_id_vol,
-                            points=points_earned,
-                            activity_type="cleanup_verified",
-                            reference_id=issue_id,
-                            reference_type="issue",
-                            metadata={
-                                "group_id": group_id,
-                                "is_leader": (user_id_vol == user_id),
-                                "volunteer_count": verified_count,
-                            },
-                        )
-
-                        distribution[vol_id]["points_earned"] = points_earned
-
-            return {
-                "issue_id": issue_id,
-                "group_id": group_id,
-                "total_points_available": total_points,
-                "verified_volunteer_count": verified_count,
-                "points_per_volunteer": (
-                    distribution_info.get("points_per_volunteer", 0)
-                    if verified_count > 0
-                    else 0
-                ),
-                "leader_bonus": (
-                    distribution_info.get("leader_bonus", 0)
-                    if verified_count > 0
-                    else 0
-                ),
-                "distribution": distribution,
-                "message": f"Points distributed to {verified_count} verified volunteers!",
-            }
-
-        except ValueError as e:
-            raise ValueError(str(e))
-        except Exception as e:
-            raise Exception(f"Failed to verify volunteers: {str(e)}")
+        return {
+            "issue_id": issue_id,
+            "group_id": group_id,
+            "total_points_available": total_points,
+            "verified_volunteer_count": verified_count,
+            "points_per_volunteer": points_per_volunteer,
+            "leader_bonus": leader_bonus,
+            "distribution": distribution,
+            "message": f"Points distributed to {verified_count} verified volunteers!",
+        }

@@ -18,7 +18,7 @@ pillow==10.1.0
 piexif==1.1.3
 
 # AI
-google-cloud-vision==3.4.4
+ultralytics==8.2.0
 
 # Image hosting
 cloudinary==1.36.0

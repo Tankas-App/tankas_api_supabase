@@ -1,14 +1,17 @@
+"""
+volunteer_service.py — Volunteer group management
+"""
+
 from app.database import get_connection
-from app.utils.points_calculator import PointsCalculator
 from datetime import datetime
 from typing import Optional, List
 
 
 class VolunteerService:
-    """Handle volunteer management and group coordination"""
 
-    def __init__(self):
-        pass
+    # ------------------------------------------------------------------
+    # Join issue
+    # ------------------------------------------------------------------
 
     async def join_issue(
         self,
@@ -17,354 +20,254 @@ class VolunteerService:
         solo_work: bool = False,
         equipment_needed: Optional[List[str]] = None,
     ) -> dict:
-        """
-        Volunteer joins an issue
 
-        Flow:
-        1. Check if issue exists
-        2. Check if group exists for this issue
-        3. If no group → Create group, user becomes leader
-        4. If group exists → Add user to group as regular member
-        5. Create volunteer record
+        async with get_connection() as conn:
 
-        Args:
-            user_id: UUID of volunteering user
-            issue_id: UUID of issue to volunteer for
-            solo_work: Whether they're working alone
-            equipment_needed: List of equipment IDs they're bringing
-
-        Returns:
-            Dictionary with volunteer details
-
-        Raises:
-            ValueError: If issue not found or user already volunteering
-        """
-        try:
-            # Step 1: Verify issue exists
-            issue_response = (
-                self.supabase.table("issues").select("*").eq("id", issue_id).execute()
+            # Verify issue exists
+            issue = await conn.fetchrow(
+                "SELECT id, title FROM issues WHERE id = $1",
+                issue_id,
             )
-            if not issue_response.data:
+            if not issue:
                 raise ValueError("Issue not found")
 
-            issue = issue_response.data[0]
-
-            # Step 2: Check if user already volunteering for this issue
-            existing = (
-                self.supabase.table("volunteers")
-                .select("id")
-                .eq("user_id", user_id)
-                .eq("issue_id", issue_id)
-                .execute()
+            # Check not already volunteering
+            existing = await conn.fetchrow(
+                "SELECT id FROM volunteers WHERE user_id=$1 AND issue_id=$2",
+                user_id,
+                issue_id,
             )
-            if existing.data and len(existing.data) > 0:
+            if existing:
                 raise ValueError("You're already volunteering for this issue")
 
-            # Step 3: Check if group exists for this issue
-            group_response = (
-                self.supabase.table("groups")
-                .select("*")
-                .eq("issue_id", issue_id)
-                .execute()
+            # Check if group exists
+            group = await conn.fetchrow(
+                "SELECT id FROM groups WHERE issue_id = $1",
+                issue_id,
             )
 
-            group_id = None
-            is_leader = False
-
-            if not group_response.data or len(group_response.data) == 0:
-                # No group exists → Create group and make user leader
-                print("Creating new group...")
-                group_data = {
-                    "issue_id": issue_id,
-                    "leader_id": user_id,
-                    "name": f"Cleanup Group - {issue['title'][:30]}",
-                    "status": "active",
-                    "created_at": datetime.utcnow().isoformat(),
-                }
-                group_response = (
-                    self.supabase.table("groups").insert(group_data).execute()
+            if not group:
+                # Create group — user becomes leader
+                group = await conn.fetchrow(
+                    """
+                    INSERT INTO groups (issue_id, leader_id, name, status, created_at, updated_at)
+                    VALUES ($1, $2, $3, 'active', NOW(), NOW())
+                    RETURNING id
+                    """,
+                    issue_id,
+                    user_id,
+                    f"Cleanup Group - {issue['title'][:30]}",
                 )
-
-                if not group_response.data:
-                    raise Exception("Failed to create group")
-
-                group_id = group_response.data[0]["id"]
                 is_leader = True
-                print(f"Group created: {group_id}, User is leader")
             else:
-                # Group exists → Add user as regular member
-                group_id = group_response.data[0]["id"]
                 is_leader = False
-                print(f"Joining existing group: {group_id}")
 
-            # Step 4: Create volunteer record
-            volunteer_data = {
-                "user_id": user_id,
-                "issue_id": issue_id,
-                "group_id": group_id,
-                "is_leader": is_leader,
-                "solo_work": solo_work,
-                "equipment_needed": equipment_needed or [],
-                "verified": False,
-                "leader_validated": False,
-                "points_earned": 0,
-                "created_at": datetime.utcnow().isoformat(),
-            }
+            group_id = str(group["id"])
 
-            vol_response = (
-                self.supabase.table("volunteers").insert(volunteer_data).execute()
+            # Create volunteer record
+            volunteer = await conn.fetchrow(
+                """
+                INSERT INTO volunteers
+                    (user_id, issue_id, group_id, is_leader, solo_work,
+                     equipment_needed, verified, leader_validated, points_earned, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, FALSE, FALSE, 0, NOW())
+                RETURNING id
+                """,
+                user_id,
+                issue_id,
+                group_id,
+                is_leader,
+                solo_work,
+                equipment_needed or [],
             )
 
-            if not vol_response.data:
-                raise Exception("Failed to create volunteer record")
+        return {
+            "volunteer_id": str(volunteer["id"]),
+            "issue_id": issue_id,
+            "group_id": group_id,
+            "is_leader": is_leader,
+            "message": "You've joined the issue!"
+            + (" as leader!" if is_leader else ""),
+        }
 
-            volunteer = vol_response.data[0]
-
-            return {
-                "volunteer_id": volunteer["id"],
-                "issue_id": issue_id,
-                "group_id": group_id,
-                "is_leader": is_leader,
-                "message": "You've joined the issue!"
-                + (" as leader!" if is_leader else ""),
-            }
-
-        except ValueError as e:
-            raise ValueError(str(e))
-        except Exception as e:
-            raise Exception(f"Failed to join issue: {str(e)}")
+    # ------------------------------------------------------------------
+    # Transfer leadership
+    # ------------------------------------------------------------------
 
     async def transfer_leadership(
-        self, current_leader_volunteer_id: str, new_leader_volunteer_id: str
+        self,
+        current_leader_volunteer_id: str,
+        new_leader_volunteer_id: str,
     ) -> dict:
-        """
-        Transfer leadership from one volunteer to another
 
-        Args:
-            current_leader_volunteer_id: Current leader's volunteer ID
-            new_leader_volunteer_id: New leader's volunteer ID
+        async with get_connection() as conn:
 
-        Returns:
-            Updated group details
-        """
-        try:
-            # Step 1: Get current leader's volunteer record
-            current = (
-                self.supabase.table("volunteers")
-                .select("*")
-                .eq("id", current_leader_volunteer_id)
-                .execute()
+            current = await conn.fetchrow(
+                "SELECT * FROM volunteers WHERE id = $1",
+                current_leader_volunteer_id,
             )
-            if not current.data:
+            if not current:
                 raise ValueError("Current leader not found")
-
-            current_leader = current.data[0]
-            if not current_leader["is_leader"]:
+            if not current["is_leader"]:
                 raise ValueError("You are not a leader")
 
-            # Step 2: Get new leader's volunteer record
-            new = (
-                self.supabase.table("volunteers")
-                .select("*")
-                .eq("id", new_leader_volunteer_id)
-                .execute()
+            new = await conn.fetchrow(
+                "SELECT * FROM volunteers WHERE id = $1",
+                new_leader_volunteer_id,
             )
-            if not new.data:
+            if not new:
                 raise ValueError("New leader not found")
 
-            new_leader = new.data[0]
-
-            # Step 3: Verify they're in the same group
-            if current_leader["group_id"] != new_leader["group_id"]:
+            if str(current["group_id"]) != str(new["group_id"]):
                 raise ValueError("Both volunteers must be in the same group")
 
-            # Step 4: Update both volunteer records
-            # Current leader becomes regular member
-            self.supabase.table("volunteers").update({"is_leader": False}).eq(
-                "id", current_leader_volunteer_id
-            ).execute()
+            # Swap leadership
+            await conn.execute(
+                "UPDATE volunteers SET is_leader=FALSE WHERE id=$1",
+                current_leader_volunteer_id,
+            )
+            await conn.execute(
+                "UPDATE volunteers SET is_leader=TRUE WHERE id=$1",
+                new_leader_volunteer_id,
+            )
+            await conn.execute(
+                "UPDATE groups SET leader_id=$1, updated_at=NOW() WHERE id=$2",
+                new["user_id"],
+                current["group_id"],
+            )
 
-            # New volunteer becomes leader
-            self.supabase.table("volunteers").update({"is_leader": True}).eq(
-                "id", new_leader_volunteer_id
-            ).execute()
+            # Get new leader's username for response
+            user = await conn.fetchrow(
+                "SELECT username FROM users WHERE id=$1",
+                new["user_id"],
+            )
 
-            # Step 5: Update group's leader_id
-            self.supabase.table("groups").update(
-                {"leader_id": new_leader["user_id"]}
-            ).eq("id", current_leader["group_id"]).execute()
+        return {
+            "message": "Leadership transferred successfully",
+            "new_leader_id": str(new["user_id"]),
+            "new_leader_name": user["username"] if user else "Unknown",
+        }
 
-            return {
-                "message": "Leadership transferred successfully",
-                "new_leader_id": new_leader["user_id"],
-                "new_leader_name": new_leader.get("username", "Unknown"),
-            }
-
-        except ValueError as e:
-            raise ValueError(str(e))
-        except Exception as e:
-            raise Exception(f"Failed to transfer leadership: {str(e)}")
+    # ------------------------------------------------------------------
+    # Get group members
+    # ------------------------------------------------------------------
 
     async def get_group_members(self, group_id: str) -> dict:
-        """
-        Get all members of a group
 
-        Args:
-            group_id: UUID of the group
+        async with get_connection() as conn:
 
-        Returns:
-            Group details with member list
-        """
-        try:
-            # Get group
-            group_response = (
-                self.supabase.table("groups").select("*").eq("id", group_id).execute()
+            group = await conn.fetchrow(
+                "SELECT * FROM groups WHERE id = $1",
+                group_id,
             )
-            if not group_response.data:
+            if not group:
                 raise ValueError("Group not found")
 
-            group = group_response.data[0]
-
-            # Get volunteers in group
-            volunteers_response = (
-                self.supabase.table("volunteers")
-                .select("*")
-                .eq("group_id", group_id)
-                .execute()
+            volunteers = await conn.fetch(
+                "SELECT * FROM volunteers WHERE group_id = $1",
+                group_id,
             )
 
-            if not volunteers_response.data:
-                members = []
-            else:
-                # Get user details for each volunteer
-                members = []
-                for vol in volunteers_response.data:
-                    user_response = (
-                        self.supabase.table("users")
-                        .select("username, display_name, avatar_url")
-                        .eq("id", vol["user_id"])
-                        .execute()
+            members = []
+            for vol in volunteers:
+                user = await conn.fetchrow(
+                    "SELECT username, display_name, avatar_url FROM users WHERE id=$1",
+                    vol["user_id"],
+                )
+                if user:
+                    members.append(
+                        {
+                            "volunteer_id": str(vol["id"]),
+                            "user_id": str(vol["user_id"]),
+                            "username": user["username"],
+                            "display_name": user["display_name"],
+                            "avatar_url": user["avatar_url"],
+                            "is_leader": vol["is_leader"],
+                            "solo_work": vol["solo_work"],
+                        }
                     )
 
-                    if user_response.data:
-                        user = user_response.data[0]
-                        members.append(
-                            {
-                                "volunteer_id": vol["id"],
-                                "user_id": vol["user_id"],
-                                "username": user.get("username", "Unknown"),
-                                "display_name": user.get("display_name", "Unknown"),
-                                "avatar_url": user.get("avatar_url"),
-                                "is_leader": vol["is_leader"],
-                                "solo_work": vol["solo_work"],
-                            }
-                        )
+        return {
+            "group_id": group_id,
+            "issue_id": str(group["issue_id"]),
+            "leader_id": str(group["leader_id"]),
+            "members": members,
+            "member_count": len(members),
+            "created_at": group["created_at"].isoformat(),
+        }
 
-            return {
-                "group_id": group_id,
-                "issue_id": group["issue_id"],
-                "leader_id": group["leader_id"],
-                "members": members,
-                "member_count": len(members),
-                "created_at": group["created_at"],
-            }
-
-        except ValueError as e:
-            raise ValueError(str(e))
-        except Exception as e:
-            raise Exception(f"Failed to fetch group members: {str(e)}")
+    # ------------------------------------------------------------------
+    # Get volunteer profile
+    # ------------------------------------------------------------------
 
     async def get_volunteer_profile(self, user_id: str) -> dict:
-        """
-        Get complete volunteer profile with history
 
-        Args:
-            user_id: UUID of the user
+        async with get_connection() as conn:
 
-        Returns:
-            User profile with volunteering history
-        """
-        try:
-            # Get user info
-            user_response = (
-                self.supabase.table("users").select("*").eq("id", user_id).execute()
+            user = await conn.fetchrow(
+                "SELECT * FROM users WHERE id = $1",
+                user_id,
             )
-            if not user_response.data:
+            if not user:
                 raise ValueError("User not found")
 
-            user = user_response.data[0]
-
-            # Get all volunteer records for this user
-            volunteers_response = (
-                self.supabase.table("volunteers")
-                .select("*")
-                .eq("user_id", user_id)
-                .execute()
+            volunteers = await conn.fetch(
+                "SELECT * FROM volunteers WHERE user_id = $1",
+                user_id,
             )
 
             history = []
             active_issues = []
 
-            if volunteers_response.data:
-                for vol in volunteers_response.data:
-                    # Get issue details
-                    issue_response = (
-                        self.supabase.table("issues")
-                        .select("*")
-                        .eq("id", vol["issue_id"])
-                        .execute()
+            for vol in volunteers:
+                issue = await conn.fetchrow(
+                    "SELECT * FROM issues WHERE id = $1",
+                    vol["issue_id"],
+                )
+                if not issue:
+                    continue
+
+                group_size = 1
+                if vol["group_id"]:
+                    group_size = await conn.fetchval(
+                        "SELECT COUNT(*) FROM volunteers WHERE group_id=$1",
+                        vol["group_id"],
                     )
 
-                    if issue_response.data:
-                        issue = issue_response.data[0]
-                        location = f"{issue['latitude']}, {issue['longitude']}"
+                history.append(
+                    {
+                        "issue_id": str(issue["id"]),
+                        "title": issue["title"],
+                        "description": issue["description"],
+                        "location": f"{issue['latitude']}, {issue['longitude']}",
+                        "difficulty": issue["difficulty"],
+                        "priority": issue["priority"],
+                        "points_earned": vol["points_earned"],
+                        "volunteered_at": (
+                            vol["created_at"].isoformat() if vol["created_at"] else None
+                        ),
+                        "completed_at": (
+                            vol["completed_at"].isoformat()
+                            if vol["completed_at"]
+                            else None
+                        ),
+                        "was_verified": vol["verified"],
+                        "group_size": group_size,
+                    }
+                )
 
-                        history_item = {
-                            "issue_id": issue["id"],
-                            "title": issue["title"],
-                            "description": issue["description"],
-                            "location": location,
-                            "difficulty": issue["difficulty"],
-                            "priority": issue["priority"],
-                            "points_earned": vol["points_earned"],
-                            "volunteered_at": vol["created_at"],
-                            "completed_at": vol.get("completed_at"),
-                            "was_verified": vol["verified"],
-                            "group_size": 1,  # We'll calculate this below
-                        }
+                if issue["status"] == "open":
+                    active_issues.append(str(issue["id"]))
 
-                        # Get group size
-                        if vol["group_id"]:
-                            group_members = (
-                                self.supabase.table("volunteers")
-                                .select("id")
-                                .eq("group_id", vol["group_id"])
-                                .execute()
-                            )
-                            history_item["group_size"] = (
-                                len(group_members.data) if group_members.data else 1
-                            )
-
-                        history.append(history_item)
-
-                        # Track active issues (where issue is still open)
-                        if issue["status"] == "open":
-                            active_issues.append(issue["id"])
-
-            return {
-                "user_id": user_id,
-                "username": user["username"],
-                "display_name": user["display_name"],
-                "avatar_url": user.get("avatar_url"),
-                "total_points": user["total_points"],
-                "tasks_completed": user["tasks_completed"],
-                "volunteer_hours": user.get("volunteer_hours", 0),
-                "badge_tier": user["badge_tier"],
-                "volunteering_history": history,
-                "active_issues": active_issues,
-            }
-
-        except ValueError as e:
-            raise ValueError(str(e))
-        except Exception as e:
-            raise Exception(f"Failed to fetch volunteer profile: {str(e)}")
+        return {
+            "user_id": str(user["id"]),
+            "username": user["username"],
+            "display_name": user["display_name"],
+            "avatar_url": user["avatar_url"],
+            "total_points": user["total_points"] or 0,
+            "tasks_completed": user["tasks_completed"] or 0,
+            "volunteer_hours": user["volunteer_hours"] or 0,
+            "badge_tier": user["badge_tier"] or "bronze",
+            "volunteering_history": history,
+            "active_issues": active_issues,
+        }
