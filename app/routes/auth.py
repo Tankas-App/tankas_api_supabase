@@ -1,108 +1,164 @@
-from fastapi import APIRouter, HTTPException, status
-from app.schemas.user_schema import SignupRequest, LoginRequest, AuthResponse, ErrorResponse
+"""
+routes/auth.py — Authentication endpoints including OTP and token refresh
+"""
+
+from fastapi import APIRouter, HTTPException, status, Request
+from pydantic import BaseModel
+from typing import Optional
+from app.schemas.user_schema import (
+    SignupRequest,
+    LoginRequest,
+    AuthResponse,
+    ErrorResponse,
+)
 from app.services.auth_service import AuthService
+from app.services.otp_service import OTPService
 
-# Create a router for auth endpoints
 router = APIRouter(tags=["authentication"])
-
-# Initialize the auth service
 auth_service = AuthService()
+otp_service = OTPService()
+
+
+# ---------------------------------------------------------------------------
+# Schemas
+# ---------------------------------------------------------------------------
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+
+
+class OTPRequest(BaseModel):
+    email: str
+
+
+class OTPVerifyRequest(BaseModel):
+    email: str
+    otp_code: str
+
+
+# ---------------------------------------------------------------------------
+# Signup / Login
+# ---------------------------------------------------------------------------
 
 
 @router.post(
     "/auth/signup",
-    response_model=AuthResponse,
     status_code=status.HTTP_201_CREATED,
     responses={
-        400: {"model": ErrorResponse, "description": "Validation error"},
-        409: {"model": ErrorResponse, "description": "Username or email already exists"}
-    }
+        400: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+    },
 )
 async def signup(request: SignupRequest):
     """
-    Register a new user
-    
-    - **email**: User's email address
-    - **username**: Unique username (3-20 chars, alphanumeric + underscore)
-    - **password**: Strong password (8+ chars, uppercase, numbers)
-    - **display_name**: Optional display name (defaults to username)
-    
-    Returns user data and JWT token on success
+    Register a new user.
+    Sends a welcome email and OTP verification code automatically.
     """
     try:
-        result = await auth_service.signup(
+        return await auth_service.signup(
             email=request.email,
             username=request.username,
             password=request.password,
-            display_name=request.display_name
+            display_name=request.display_name,
         )
-        return result
-    
     except ValueError as e:
-        # Validation error or username/email already exists
         error_msg = str(e)
-        
-        # Determine status code based on error
-        if "already" in error_msg.lower():
-            status_code = status.HTTP_409_CONFLICT
-        else:
-            status_code = status.HTTP_400_BAD_REQUEST
-        
-        raise HTTPException(
-            status_code=status_code,
-            detail=error_msg
+        status_code = (
+            status.HTTP_409_CONFLICT
+            if "already" in error_msg.lower()
+            else status.HTTP_400_BAD_REQUEST
         )
-    
+        raise HTTPException(status_code=status_code, detail=error_msg)
     except Exception as e:
-        # Unexpected error
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Signup failed: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Signup failed: {str(e)}")
 
 
 @router.post(
     "/auth/login",
-    response_model=AuthResponse,
     responses={
-        400: {"model": ErrorResponse, "description": "Invalid credentials"},
-        401: {"model": ErrorResponse, "description": "Unauthorized"}
-    }
+        401: {"model": ErrorResponse},
+        400: {"model": ErrorResponse},
+    },
 )
 async def login(request: LoginRequest):
+    """Login with username or email. Returns access + refresh token."""
+    try:
+        return await auth_service.login(
+            username=request.username,
+            password=request.password,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Login failed: {str(e)}")
+
+
+# ---------------------------------------------------------------------------
+# Token refresh
+# ---------------------------------------------------------------------------
+
+
+@router.post("/auth/refresh")
+async def refresh_token(body: RefreshTokenRequest):
     """
-    Login with username or email
-    
-    - **username**: Username or email address
-    - **password**: User's password
-    
-    Returns user data and JWT token on success
+    Exchange a refresh token for a new access token + refresh token.
+    Call this when the access token expires (after 7 days).
     """
     try:
-        result = await auth_service.login(
-            username=request.username,
-            password=request.password
-        )
-        return result
-    
+        return await auth_service.refresh_access_token(body.refresh_token)
     except ValueError as e:
-        error_msg = str(e)
-        
-        # Determine status code
-        if "not found" in error_msg.lower():
-            status_code = status.HTTP_401_UNAUTHORIZED
-        elif "invalid" in error_msg.lower():
-            status_code = status.HTTP_401_UNAUTHORIZED
-        else:
-            status_code = status.HTTP_400_BAD_REQUEST
-        
-        raise HTTPException(
-            status_code=status_code,
-            detail=error_msg
-        )
-    
+        raise HTTPException(status_code=401, detail=str(e))
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Login failed: {str(e)}"
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# OTP endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.post("/auth/otp/request")
+async def request_otp(body: OTPRequest):
+    """
+    Request an email OTP verification code.
+    Sends a 6-digit code to the provided email.
+    Valid for 10 minutes, max 3 attempts.
+    """
+    try:
+        return await otp_service.resend_otp(email=body.email)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/auth/otp/verify")
+async def verify_otp(body: OTPVerifyRequest):
+    """
+    Verify an email OTP code.
+    Marks the user's email as verified on success.
+    """
+    try:
+        return await otp_service.verify_otp(
+            email=body.email,
+            otp_code=body.otp_code,
         )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/auth/otp/resend")
+async def resend_otp(body: OTPRequest):
+    """
+    Resend OTP verification code.
+    Invalidates previous code and sends a fresh one.
+    """
+    try:
+        return await otp_service.resend_otp(email=body.email)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

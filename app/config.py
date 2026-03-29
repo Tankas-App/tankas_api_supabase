@@ -7,7 +7,7 @@ load_dotenv()
 class Config:
     """Configuration settings from environment variables"""
 
-    # --- Database (Koyeb PostgreSQL) ---
+    # --- Database ---
     DATABASE_URL = os.getenv("DATABASE_URL")
 
     # --- Auth ---
@@ -22,7 +22,11 @@ class Config:
     PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
     PAYSTACK_BASE_URL = os.getenv("PAYSTACK_BASE_URL", "https://api.paystack.co")
 
-    # --- AI (optional — only needed if using Google Vision, we use YOLOv8 now) ---
+    # --- Email ---
+    GMAIL_SENDER_EMAIL = os.getenv("GMAIL_SENDER_EMAIL")
+    GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
+
+    # --- AI (optional) ---
     GOOGLE_VISION_CREDENTIALS_PATH = os.getenv("GOOGLE_VISION_CREDENTIALS_PATH")
 
     # --- Validation ---
@@ -38,6 +42,10 @@ class Config:
         raise ValueError("CLOUDINARY_API_SECRET not found in .env file")
     if not PAYSTACK_SECRET_KEY:
         raise ValueError("PAYSTACK_SECRET_KEY not found in .env file")
+    if not GMAIL_SENDER_EMAIL:
+        raise ValueError("GMAIL_SENDER_EMAIL not found in .env file")
+    if not GMAIL_APP_PASSWORD:
+        raise ValueError("GMAIL_APP_PASSWORD not found in .env file")
 
 
 config = Config()
