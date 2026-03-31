@@ -17,7 +17,7 @@ class EmailService:
         self.sender_email = config.GMAIL_SENDER_EMAIL
         self.app_password = config.GMAIL_APP_PASSWORD
         self.smtp_host = "smtp.gmail.com"
-        self.smtp_port = 465
+        self.smtp_port = 587
 
     # ------------------------------------------------------------------
     # Core send method
@@ -36,7 +36,9 @@ class EmailService:
 
             msg.attach(MIMEText(html_body, "html"))
 
-            with smtplib.SMTP_SSL(self.smtp_host, self.smtp_port) as server:
+            with smtplib.SMTP(self.smtp_host, 587) as server:
+                server.ehlo()
+                server.starttls()
                 server.login(self.sender_email, self.app_password)
                 server.sendmail(self.sender_email, to_email, msg.as_string())
 

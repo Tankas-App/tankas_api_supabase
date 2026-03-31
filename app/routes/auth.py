@@ -162,3 +162,18 @@ async def resend_otp(body: OTPRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/auth/me")
+async def get_me(request: Request):
+    """Get current user from token."""
+    try:
+        auth = request.headers.get("authorization", "")
+        parts = auth.split()
+        if len(parts) != 2:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        user_id = JWTHandler.get_user_id_from_token(parts[1])
+        result = await auth_service.get_user_by_id(user_id)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=str(e))
