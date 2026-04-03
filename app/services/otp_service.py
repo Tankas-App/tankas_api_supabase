@@ -73,7 +73,7 @@ class OTPService:
             session = await conn.fetchrow(
                 """
                 SELECT * FROM otp_sessions
-                WHERE email=$1 AND is_used=FALSE
+                WHERE email=$1 AND is_verified=FALSE
                 ORDER BY created_at DESC
                 LIMIT 1
                 """,
@@ -93,7 +93,7 @@ class OTPService:
                 raise ValueError("OTP has expired. Please request a new one.")
 
             # Check max retries
-            if session["retry_count"] >= OTP_MAX_RETRIES:
+            if session["retries"] >= OTP_MAX_RETRIES:
                 await conn.execute(
                     "DELETE FROM otp_sessions WHERE id=$1", str(session["id"])
                 )
@@ -104,15 +104,15 @@ class OTPService:
             # Check code
             if session["otp_code"] != otp_code:
                 await conn.execute(
-                    "UPDATE otp_sessions SET retry_count = retry_count + 1 WHERE id=$1",
+                    "UPDATE otp_sessions SET retries = retries + 1 WHERE id=$1",
                     str(session["id"]),
                 )
-                remaining = OTP_MAX_RETRIES - (session["retry_count"] + 1)
+                remaining = OTP_MAX_RETRIES - (session["retries"] + 1)
                 raise ValueError(f"Incorrect OTP. {remaining} attempt(s) remaining.")
 
-            # Mark as used
+            # Mark as verified
             await conn.execute(
-                "UPDATE otp_sessions SET is_used=TRUE WHERE id=$1",
+                "UPDATE otp_sessions SET is_verified=TRUE WHERE id=$1",
                 str(session["id"]),
             )
 
