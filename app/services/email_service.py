@@ -3,12 +3,41 @@ email_service.py — Gmail SMTP email sending
 Handles: OTP emails, welcome emails, notification emails
 """
 
+import asyncio
 import smtplib
 import random
 import string
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from app.config import config
+
+
+# smtplib blocks with no timeout by default, so an unreachable or slow SMTP
+# server can hang a request indefinitely. Bound it.
+SMTP_TIMEOUT_SECONDS = 15
+
+# Strong references to in-flight background sends. Without this the event loop
+# can garbage-collect a task that nothing is awaiting, cancelling it mid-send.
+_background_sends: set[asyncio.Task] = set()
+
+
+def fire_and_forget(coro) -> None:
+    """
+    Run a coroutine without awaiting it, so the caller returns immediately.
+
+    Used for transactional email: the OTP row is already committed, so delivery
+    is not something the HTTP response should wait on. Failures are logged by
+    `EmailService._send` and the user can hit "resend".
+    """
+    try:
+        task = asyncio.create_task(coro)
+    except RuntimeError:
+        # No running loop (e.g. called from a sync context or a script).
+        # Fall back to sending inline rather than dropping the mail silently.
+        asyncio.run(coro)
+        return
+    _background_sends.add(task)
+    task.add_done_callback(_background_sends.discard)
 
 
 class EmailService:
@@ -36,7 +65,9 @@ class EmailService:
 
             msg.attach(MIMEText(html_body, "html"))
 
-            with smtplib.SMTP(self.smtp_host, 587) as server:
+            with smtplib.SMTP(
+                self.smtp_host, self.smtp_port, timeout=SMTP_TIMEOUT_SECONDS
+            ) as server:
                 server.ehlo()
                 server.starttls()
                 server.login(self.sender_email, self.app_password)
@@ -48,6 +79,22 @@ class EmailService:
         except Exception as e:
             print(f"[EMAIL] Failed to send '{subject}' to {to_email}: {e}")
             return False
+
+    # ------------------------------------------------------------------
+    # Async variants
+    #
+    # `_send` is blocking smtplib. Calling it straight from a coroutine stalls
+    # the whole event loop — every other in-flight request waits on that one
+    # SMTP round-trip. These hand the work to a worker thread instead.
+    # ------------------------------------------------------------------
+
+    async def send_otp_async(
+        self, to_email: str, otp_code: str, username: str
+    ) -> bool:
+        return await asyncio.to_thread(self.send_otp, to_email, otp_code, username)
+
+    async def send_welcome_async(self, to_email: str, username: str) -> bool:
+        return await asyncio.to_thread(self.send_welcome, to_email, username)
 
     # ------------------------------------------------------------------
     # OTP email

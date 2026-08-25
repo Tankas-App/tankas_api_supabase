@@ -6,7 +6,7 @@ from app.database import get_connection
 from app.utils.hashing import PasswordHasher
 from app.utils.validators import DataValidator
 from app.utils.jwt_handler import JWTHandler
-from app.services.email_service import EmailService
+from app.services.email_service import EmailService, fire_and_forget
 from app.services.otp_service import OTPService
 
 
@@ -85,9 +85,10 @@ class AuthService:
         except Exception as e:
             print(f"[AUTH] OTP send failed: {e}")
 
-        # Send welcome email
+        # Welcome mail is purely informational — dispatch it in the background
+        # so signup never waits on (or is blocked by) SMTP.
         try:
-            self.email_service.send_welcome(email, username)
+            fire_and_forget(self.email_service.send_welcome_async(email, username))
         except Exception as e:
             print(f"[AUTH] Welcome email failed: {e}")
 

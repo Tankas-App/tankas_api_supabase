@@ -4,7 +4,7 @@ Handles: request, verify, resend
 """
 
 from app.database import get_connection
-from app.services.email_service import EmailService
+from app.services.email_service import EmailService, fire_and_forget
 from datetime import datetime, timedelta
 
 
@@ -47,19 +47,18 @@ class OTPService:
                 expires_at,
             )
 
-        # Send email
-        sent = self.email_service.send_otp(email, otp_code, username)
+        # The OTP row is committed, so delivery is not something the caller has
+        # to wait on. Dispatching in the background keeps the response fast and
+        # keeps a slow SMTP round-trip off the event loop. Send failures are
+        # logged by EmailService._send; the user can request a resend.
+        fire_and_forget(self.email_service.send_otp_async(email, otp_code, username))
 
         return {
             "session_id": str(session["id"]),
             "email": email,
             "expires_in": f"{OTP_EXPIRY_MINUTES} minutes",
-            "sent": sent,
-            "message": (
-                f"OTP sent to {email}"
-                if sent
-                else "OTP generated but email failed — check server logs"
-            ),
+            "queued": True,
+            "message": f"OTP sent to {email}",
         }
 
     # ------------------------------------------------------------------
