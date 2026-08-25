@@ -1,12 +1,16 @@
 """
-email_service.py — Gmail SMTP email sending
-Handles: OTP emails, welcome emails, notification emails
+email_service.py — transactional email
+
+Two transports: Resend over HTTPS when RESEND_API_KEY is set, Gmail SMTP
+otherwise. Handles OTP, welcome and notification emails.
 """
 
 import asyncio
-import smtplib
 import random
+import smtplib
 import string
+
+import httpx
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from app.config import config
@@ -15,6 +19,22 @@ from app.config import config
 # smtplib blocks with no timeout by default, so an unreachable or slow SMTP
 # server can hang a request indefinitely. Bound it.
 SMTP_TIMEOUT_SECONDS = 15
+
+# Cap the Resend HTTPS call too, for the same reason.
+HTTP_TIMEOUT_SECONDS = 15
+
+def _log(message: str) -> None:
+    """
+    Console logging that cannot raise. Subjects contain emoji, and on a console
+    with a non-UTF-8 encoding (Windows cp1252) print() throws
+    UnicodeEncodeError — which, from inside an except block, would turn a failed
+    send into an exception escaping into the caller.
+    """
+    try:
+        print(message)
+    except UnicodeEncodeError:
+        print(message.encode("ascii", "backslashreplace").decode("ascii"))
+
 
 # Strong references to in-flight background sends. Without this the event loop
 # can garbage-collect a task that nothing is awaiting, cancelling it mid-send.
@@ -47,6 +67,8 @@ class EmailService:
         self.app_password = config.GMAIL_APP_PASSWORD
         self.smtp_host = "smtp.gmail.com"
         self.smtp_port = 587
+        self.resend_api_key = config.RESEND_API_KEY
+        self.resend_from = config.RESEND_FROM
 
     # ------------------------------------------------------------------
     # Core send method
@@ -54,9 +76,49 @@ class EmailService:
 
     def _send(self, to_email: str, subject: str, html_body: str) -> bool:
         """
-        Send an email via Gmail SMTP.
+        Send an email, preferring Resend's HTTPS API when it is configured.
+
+        Railway blocks outbound SMTP on Free/Trial/Hobby plans, so SMTP fails
+        there with "[Errno 101] Network is unreachable" no matter how the
+        client is configured. HTTPS on 443 is never blocked.
+
         Always wrapped in try/except — email failures must never crash requests.
         """
+        if self.resend_api_key:
+            return self._send_via_resend(to_email, subject, html_body)
+        return self._send_via_smtp(to_email, subject, html_body)
+
+    def _send_via_resend(self, to_email: str, subject: str, html_body: str) -> bool:
+        try:
+            with httpx.Client(timeout=HTTP_TIMEOUT_SECONDS) as client:
+                r = client.post(
+                    "https://api.resend.com/emails",
+                    headers={"Authorization": f"Bearer {self.resend_api_key}"},
+                    json={
+                        "from": self.resend_from,
+                        "to": [to_email],
+                        "subject": subject,
+                        "html": html_body,
+                    },
+                )
+
+            if r.status_code >= 400:
+                # Resend returns a JSON body explaining the rejection — an
+                # unverified sending domain is the usual cause.
+                _log(
+                    f"[EMAIL] Resend rejected '{subject}' to {to_email}: "
+                    f"{r.status_code} {r.text[:300]}"
+                )
+                return False
+
+            _log(f"[EMAIL] Sent '{subject}' to {to_email} via Resend")
+            return True
+
+        except Exception as e:
+            _log(f"[EMAIL] Resend failed for '{subject}' to {to_email}: {e}")
+            return False
+
+    def _send_via_smtp(self, to_email: str, subject: str, html_body: str) -> bool:
         try:
             msg = MIMEMultipart("alternative")
             msg["Subject"] = subject
@@ -73,19 +135,19 @@ class EmailService:
                 server.login(self.sender_email, self.app_password)
                 server.sendmail(self.sender_email, to_email, msg.as_string())
 
-            print(f"[EMAIL] Sent '{subject}' to {to_email}")
+            _log(f"[EMAIL] Sent '{subject}' to {to_email}")
             return True
 
         except Exception as e:
-            print(f"[EMAIL] Failed to send '{subject}' to {to_email}: {e}")
+            _log(f"[EMAIL] Failed to send '{subject}' to {to_email}: {e}")
             return False
 
     # ------------------------------------------------------------------
     # Async variants
     #
-    # `_send` is blocking smtplib. Calling it straight from a coroutine stalls
-    # the whole event loop — every other in-flight request waits on that one
-    # SMTP round-trip. These hand the work to a worker thread instead.
+    # `_send` blocks, on either transport. Calling it straight from a coroutine
+    # stalls the whole event loop — every other in-flight request waits on that
+    # one round-trip. These hand the work to a worker thread instead.
     # ------------------------------------------------------------------
 
     async def send_otp_async(

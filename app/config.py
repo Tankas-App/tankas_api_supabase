@@ -31,8 +31,21 @@ class Config:
     PAYSTACK_BASE_URL = os.getenv("PAYSTACK_BASE_URL", "https://api.paystack.co")
 
     # --- Email ---
+    # Two transports. Resend (HTTPS) is used when RESEND_API_KEY is set,
+    # otherwise the code falls back to Gmail SMTP.
+    #
+    # This matters in production: Railway blocks outbound SMTP on Free, Trial
+    # and Hobby plans — connections fail with "[Errno 101] Network is
+    # unreachable" — so a hosted deploy has to send over HTTPS instead.
+    # See https://docs.railway.com/networking/outbound-networking
     GMAIL_SENDER_EMAIL = os.getenv("GMAIL_SENDER_EMAIL")
     GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
+
+    RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+    # Must be an address on a domain verified in Resend. The default only
+    # delivers to the address that owns the Resend account — fine for testing,
+    # not for real users.
+    RESEND_FROM = os.getenv("RESEND_FROM", "Tankas <onboarding@resend.dev>")
 
     # --- AI Provider ---
     # Options: "yolo" (free, default) or "google_vision" (paid, more accurate)
