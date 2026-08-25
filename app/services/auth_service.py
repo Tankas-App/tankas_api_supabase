@@ -54,7 +54,8 @@ class AuthService:
                 )
                 VALUES ($1, $2, $3, $4, FALSE, NOW(), NOW())
                 RETURNING id, email, username, display_name, avatar_url,
-                          total_points, badge_tier, role, created_at
+                          total_points, badge_tier, role, email_verified,
+                          created_at
                 """,
                 email,
                 username,
@@ -206,6 +207,11 @@ class AuthService:
     # ------------------------------------------------------------------
 
     def _build_auth_response(self, user, token: str) -> dict:
+        """
+        Shape of `user` here must match what /auth/me returns from
+        get_user_by_id. Clients store this object directly, so any field
+        missing from it reads as undefined until the next /auth/me call.
+        """
         return {
             "user": {
                 "id": str(user["id"]),
@@ -216,6 +222,10 @@ class AuthService:
                 "total_points": user["total_points"] or 0,
                 "badge_tier": user["badge_tier"] or "bronze",
                 "role": user["role"] or "user",
+                # Was previously only returned as a sibling of `user`, so a
+                # freshly logged-in client saw undefined and showed the
+                # "verify your email" prompt to already-verified accounts.
+                "email_verified": bool(user["email_verified"]),
                 "created_at": str(user["created_at"]),
             },
             "token": token,
