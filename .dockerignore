@@ -1,0 +1,24 @@
+# Local virtualenvs and caches — never belong in the image
+.venv/
+venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets — provided as Railway environment variables at runtime
+.env
+.env.*
+credentials/
+
+# VCS and editor state
+.git/
+.gitignore
+.idea/
+.vscode/
+
+# Docs and deploy manifests not needed inside the image
+README.md
+render.yaml

@@ -17,8 +17,34 @@ Pool lifecycle:
 
 import asyncpg
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Optional, Union
+from urllib.parse import urlparse
 from app.config import config
+
+
+# Hosts that speak plain TCP with no TLS: Railway's private network, a Postgres
+# container on a compose/Docker network, and anything local.
+_NO_TLS_SUFFIXES = (".railway.internal",)
+_NO_TLS_HOSTS = {"localhost", "127.0.0.1", "::1", "postgres", "db"}
+
+
+def _resolve_ssl() -> Union[str, bool]:
+    """
+    Decide whether to require TLS for the database connection.
+
+    Set DB_SSL explicitly ('require' | 'prefer' | 'disable') to override.
+    Otherwise TLS is required for managed providers (Supabase, Koyeb, Neon) and
+    skipped for Railway's private network and local/containerised Postgres,
+    which do not terminate TLS and will refuse the handshake.
+    """
+    override = (config.DB_SSL or "").strip().lower()
+    if override:
+        return False if override == "disable" else override
+
+    host = (urlparse(config.DATABASE_URL).hostname or "").lower()
+    if host in _NO_TLS_HOSTS or host.endswith(_NO_TLS_SUFFIXES):
+        return False
+    return "require"
 
 # ---------------------------------------------------------------------------
 # Module-level pool — None until init_db() is called
@@ -38,15 +64,16 @@ async def init_db() -> None:
     """
     global _pool
 
+    ssl_mode = _resolve_ssl()
+
     _pool = await asyncpg.create_pool(
         dsn=config.DATABASE_URL,
-        min_size=2,  # keep 2 connections warm
-        max_size=10,  # max 10 concurrent connections (fits Koyeb free tier)
+        min_size=config.DB_POOL_MIN,
+        max_size=config.DB_POOL_MAX,
         command_timeout=30,  # seconds before a query is killed
-        # asyncpg uses Python's ssl module; pass ssl="require" if Koyeb requires TLS
-        ssl="require",
+        ssl=ssl_mode,
     )
-    print("[DB] Connection pool created ✅")
+    print(f"[DB] Connection pool created ✅ (ssl={ssl_mode or 'disabled'})")
 
 
 async def close_db() -> None:

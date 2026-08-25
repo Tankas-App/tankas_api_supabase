@@ -10,6 +10,14 @@ class Config:
     # --- Database ---
     DATABASE_URL = os.getenv("DATABASE_URL")
 
+    # TLS mode for the database connection: 'require' | 'prefer' | 'disable'.
+    # Leave unset to auto-detect (see app/database.py::_resolve_ssl) — managed
+    # providers get TLS, Railway's private network and local Postgres do not.
+    DB_SSL = os.getenv("DB_SSL", "")
+
+    DB_POOL_MIN = int(os.getenv("DB_POOL_MIN", "2"))
+    DB_POOL_MAX = int(os.getenv("DB_POOL_MAX", "10"))
+
     # --- Auth ---
     JWT_SECRET = os.getenv("JWT_SECRET")
 
