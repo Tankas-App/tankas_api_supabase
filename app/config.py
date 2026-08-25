@@ -41,6 +41,11 @@ class Config:
     GMAIL_SENDER_EMAIL = os.getenv("GMAIL_SENDER_EMAIL")
     GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
 
+    # Pin the transport explicitly: "resend" | "brevo" | "smtp".
+    # Unset means "first one configured wins", which makes a stray RESEND_API_KEY
+    # quietly override Brevo.
+    EMAIL_PROVIDER = os.getenv("EMAIL_PROVIDER", "")
+
     RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
     # Must be an address on a domain verified in Resend. The default only
     # delivers to the address that owns the Resend account — fine for testing,

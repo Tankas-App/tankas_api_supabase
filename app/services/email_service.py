@@ -1,8 +1,14 @@
 """
 email_service.py — transactional email
 
-Two transports: Resend over HTTPS when RESEND_API_KEY is set, Gmail SMTP
-otherwise. Handles OTP, welcome and notification emails.
+Three transports, chosen by EMAIL_PROVIDER or by whichever is configured
+first: Resend (HTTPS), Brevo (HTTPS) and Gmail SMTP.
+
+Hosts commonly block outbound SMTP — Railway does on Free/Trial/Hobby — so a
+deploy generally needs one of the HTTPS options even though Gmail SMTP works
+fine locally.
+
+Handles OTP, welcome and notification emails.
 """
 
 import asyncio
@@ -23,6 +29,7 @@ SMTP_TIMEOUT_SECONDS = 15
 # Cap the Resend HTTPS call too, for the same reason.
 HTTP_TIMEOUT_SECONDS = 15
 
+
 def _log(message: str) -> None:
     """
     Console logging that cannot raise. Subjects contain emoji, and on a console
@@ -34,6 +41,11 @@ def _log(message: str) -> None:
         print(message)
     except UnicodeEncodeError:
         print(message.encode("ascii", "backslashreplace").decode("ascii"))
+
+
+# Log the active transport once, so "which provider is actually sending?" is
+# answerable from the deploy logs instead of by guesswork.
+_announced: set[str] = set()
 
 
 # Strong references to in-flight background sends. Without this the event loop
@@ -77,26 +89,54 @@ class EmailService:
     # Core send method
     # ------------------------------------------------------------------
 
+    def _resolve_provider(self) -> str:
+        """
+        Which transport to use.
+
+        EMAIL_PROVIDER pins it explicitly ("resend" | "brevo" | "smtp").
+        Left unset, the first configured transport wins, in that order — which
+        means simply having RESEND_API_KEY present silently beats Brevo. Set
+        EMAIL_PROVIDER when you want to be sure which one is in play.
+        """
+        pinned = (config.EMAIL_PROVIDER or "").strip().lower()
+        if pinned in {"resend", "brevo", "smtp"}:
+            return pinned
+        if self.resend_api_key:
+            return "resend"
+        if self.brevo_api_key:
+            return "brevo"
+        return "smtp"
+
     def _send(self, to_email: str, subject: str, html_body: str) -> bool:
         """
-        Send an email over whichever transport is configured.
-
-        Order: Resend, then Brevo, then Gmail SMTP.
+        Send an email over the resolved transport.
 
         Both HTTPS options exist because Railway blocks outbound SMTP on Free,
         Trial and Hobby plans — SMTP fails there with "[Errno 101] Network is
         unreachable" no matter how the client is configured, while port 443 is
-        never blocked.
+        never blocked. Gmail SMTP is fine locally; it is the host that refuses.
 
         Resend needs a verified *domain* to reach anyone but the account owner.
-        Brevo can send to anyone from a verified *sender address*, so it is the
+        Brevo reaches anyone from a verified *sender address*, so it is the
         option that works without owning a domain.
 
         Always wrapped in try/except — email failures must never crash requests.
         """
-        if self.resend_api_key:
+        provider = self._resolve_provider()
+
+        if provider not in _announced:
+            _announced.add(provider)
+            detail = {
+                "resend": f"from {self.resend_from}",
+                "brevo": f"from {self.brevo_sender_name} <{self.brevo_sender_email}>",
+                "smtp": f"via {self.smtp_host} as {self.sender_email}",
+            }[provider]
+            pinned = "pinned by EMAIL_PROVIDER" if config.EMAIL_PROVIDER else "auto-selected"
+            _log(f"[EMAIL] transport = {provider} ({pinned}), {detail}")
+
+        if provider == "resend":
             return self._send_via_resend(to_email, subject, html_body)
-        if self.brevo_api_key:
+        if provider == "brevo":
             return self._send_via_brevo(to_email, subject, html_body)
         return self._send_via_smtp(to_email, subject, html_body)
 
