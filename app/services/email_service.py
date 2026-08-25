@@ -69,6 +69,9 @@ class EmailService:
         self.smtp_port = 587
         self.resend_api_key = config.RESEND_API_KEY
         self.resend_from = config.RESEND_FROM
+        self.brevo_api_key = config.BREVO_API_KEY
+        self.brevo_sender_email = config.BREVO_SENDER_EMAIL
+        self.brevo_sender_name = config.BREVO_SENDER_NAME
 
     # ------------------------------------------------------------------
     # Core send method
@@ -76,17 +79,62 @@ class EmailService:
 
     def _send(self, to_email: str, subject: str, html_body: str) -> bool:
         """
-        Send an email, preferring Resend's HTTPS API when it is configured.
+        Send an email over whichever transport is configured.
 
-        Railway blocks outbound SMTP on Free/Trial/Hobby plans, so SMTP fails
-        there with "[Errno 101] Network is unreachable" no matter how the
-        client is configured. HTTPS on 443 is never blocked.
+        Order: Resend, then Brevo, then Gmail SMTP.
+
+        Both HTTPS options exist because Railway blocks outbound SMTP on Free,
+        Trial and Hobby plans — SMTP fails there with "[Errno 101] Network is
+        unreachable" no matter how the client is configured, while port 443 is
+        never blocked.
+
+        Resend needs a verified *domain* to reach anyone but the account owner.
+        Brevo can send to anyone from a verified *sender address*, so it is the
+        option that works without owning a domain.
 
         Always wrapped in try/except — email failures must never crash requests.
         """
         if self.resend_api_key:
             return self._send_via_resend(to_email, subject, html_body)
+        if self.brevo_api_key:
+            return self._send_via_brevo(to_email, subject, html_body)
         return self._send_via_smtp(to_email, subject, html_body)
+
+    def _send_via_brevo(self, to_email: str, subject: str, html_body: str) -> bool:
+        try:
+            with httpx.Client(timeout=HTTP_TIMEOUT_SECONDS) as client:
+                r = client.post(
+                    "https://api.brevo.com/v3/smtp/email",
+                    headers={
+                        "api-key": self.brevo_api_key,
+                        "content-type": "application/json",
+                        "accept": "application/json",
+                    },
+                    json={
+                        "sender": {
+                            "name": self.brevo_sender_name,
+                            "email": self.brevo_sender_email,
+                        },
+                        "to": [{"email": to_email}],
+                        "subject": subject,
+                        "htmlContent": html_body,
+                    },
+                )
+
+            if r.status_code >= 400:
+                # Usually an unverified sender address.
+                _log(
+                    f"[EMAIL] Brevo rejected '{subject}' to {to_email}: "
+                    f"{r.status_code} {r.text[:300]}"
+                )
+                return False
+
+            _log(f"[EMAIL] Sent '{subject}' to {to_email} via Brevo")
+            return True
+
+        except Exception as e:
+            _log(f"[EMAIL] Brevo failed for '{subject}' to {to_email}: {e}")
+            return False
 
     def _send_via_resend(self, to_email: str, subject: str, html_body: str) -> bool:
         try:

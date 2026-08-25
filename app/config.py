@@ -47,6 +47,13 @@ class Config:
     # not for real users.
     RESEND_FROM = os.getenv("RESEND_FROM", "Tankas <onboarding@resend.dev>")
 
+    # Brevo is the transport that works without owning a domain: it sends to
+    # anyone once a single sender *address* is verified, on a permanent free
+    # tier. Used when RESEND_API_KEY is unset.
+    BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
+    BREVO_SENDER_EMAIL = os.getenv("BREVO_SENDER_EMAIL", "")
+    BREVO_SENDER_NAME = os.getenv("BREVO_SENDER_NAME", "Tankas")
+
     # --- AI Provider ---
     # Options: "yolo" (free, default) or "google_vision" (paid, more accurate)
     # Switch by changing this one line in .env — no code changes needed
