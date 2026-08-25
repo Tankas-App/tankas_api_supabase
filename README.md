@@ -417,6 +417,101 @@ POST   /api/admin/weekly-badges-reset          Manually reset weekly badges
 POST   /api/admin/schedule-weekly-badges       Setup automatic reset
 ```
 
+### Comments ✨ NEW
+```
+POST   /api/issues/{id}/comments               Add a comment to an issue
+GET    /api/issues/{id}/comments               List comments (public)
+DELETE /api/comments/{id}                      Delete a comment (author/admin)
+```
+
+### Rewards ✨ NEW
+```
+GET    /api/rewards                            Reward catalogue (public)
+GET    /api/rewards/{id}                       Reward detail (public)
+POST   /api/rewards/{id}/redeem                Redeem a reward with points
+GET    /api/rewards/me/redemptions             Your redemption history
+POST   /api/rewards                            Create a reward (admin)
+PATCH  /api/rewards/{id}/availability          Enable/disable (admin)
+```
+
+### Profile ✨ NEW
+```
+GET    /api/users/me                           Your full profile
+PATCH  /api/users/me                           Update name/username/phone
+PUT    /api/users/me/avatar                    Upload avatar (max 5MB)
+GET    /api/users/me/dashboard                 Stats, recent activity, badges
+```
+
+### Public / Landing Page ✨ NEW
+```
+GET    /api/events                             Public issue feed, no auth
+GET    /api/warriors                           Warrior directory, no auth
+GET    /api/warriors/{id}                      Warrior profile, no auth
+GET    /api/stats                              Platform totals, no auth
+```
+
+---
+
+## 🚂 Deploying to Railway
+
+The app deploys as a Docker container. `railway.json` selects the Dockerfile
+builder and points the healthcheck at `/health`.
+
+**1. Create the services**
+
+In your Railway project, add a **PostgreSQL** database, then a service pointing
+at this repo. Railway's Postgres is itself a container — you do not need to run
+your own `postgres:16` service, and using theirs gets you backups and metrics.
+
+**2. Set the variables**
+
+Reference the database so the URL tracks it automatically:
+
+```
+DATABASE_URL=${{Postgres.DATABASE_URL}}
+```
+
+Then set the rest from `.env.example`: `JWT_SECRET`, the three `CLOUDINARY_*`
+keys, `PAYSTACK_SECRET_KEY`, `GMAIL_SENDER_EMAIL`, `GMAIL_APP_PASSWORD`, and
+`AI_PROVIDER=yolo`.
+
+Leave `DB_SSL` unset. The app auto-detects: TLS is required for managed
+providers, and skipped on Railway's private network, which terminates no TLS
+and would refuse the handshake.
+
+**3. Run the migrations**
+
+Against the Railway Postgres, once:
+
+```bash
+psql "$DATABASE_URL" -f tankas_migration.sql
+psql "$DATABASE_URL" -f migrations/002_comments.sql
+```
+
+**4. Notes**
+
+- `PORT` is injected by Railway and the container's start command expands it.
+  Do not hardcode 8000.
+- The image installs the **CPU-only** torch wheel. The default PyPI wheel
+  bundles CUDA (~2.5GB) which is useless without a GPU.
+- YOLOv8s loads at import time, so first boot takes a while and the container
+  needs roughly 1GB of memory. The healthcheck timeout is set generously for
+  this reason.
+- `GOOGLE_VISION_CREDENTIALS_PATH` will not work on Railway as-is, since
+  `credentials/` is gitignored and excluded from the image. Stay on
+  `AI_PROVIDER=yolo` unless you mount the JSON another way.
+
+### Running locally with Docker
+
+`docker-compose.yml` mirrors the Railway topology (API container + Postgres
+container):
+
+```bash
+docker compose up --build
+docker compose exec -T db psql -U postgres -d tankas < tankas_migration.sql
+docker compose exec -T db psql -U postgres -d tankas < migrations/002_comments.sql
+```
+
 ---
 
 ## 🏗️ System Architecture

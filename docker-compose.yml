@@ -1,0 +1,51 @@
+# Local development stack — mirrors the Railway topology (API container +
+# Postgres container) so what you run here matches what deploys there.
+#
+#   docker compose up --build
+#   docker compose exec -T db psql -U postgres -d tankas < tankas_migration.sql
+#   docker compose exec -T db psql -U postgres -d tankas < migrations/002_comments.sql
+#
+# On Railway you do NOT run this file: add the managed Postgres plugin and point
+# DATABASE_URL at ${{Postgres.DATABASE_URL}} instead.
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: tankas
+    ports:
+      - "5432:5432"
+    volumes:
+      - tankas_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d tankas"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # 'db' is the compose service name — no TLS on this network, which
+      # _resolve_ssl() detects automatically.
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/tankas
+      PORT: "8000"
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      CLOUDINARY_CLOUD_NAME: ${CLOUDINARY_CLOUD_NAME:-}
+      CLOUDINARY_API_KEY: ${CLOUDINARY_API_KEY:-}
+      CLOUDINARY_API_SECRET: ${CLOUDINARY_API_SECRET:-}
+      PAYSTACK_SECRET_KEY: ${PAYSTACK_SECRET_KEY:-}
+      PAYSTACK_BASE_URL: https://api.paystack.co
+      GMAIL_SENDER_EMAIL: ${GMAIL_SENDER_EMAIL:-}
+      GMAIL_APP_PASSWORD: ${GMAIL_APP_PASSWORD:-}
+      AI_PROVIDER: yolo
+    ports:
+      - "8000:8000"
+
+volumes:
+  tankas_pgdata:
