@@ -24,7 +24,7 @@ from app.config import config
 
 # Hosts that speak plain TCP with no TLS: Railway's private network, a Postgres
 # container on a compose/Docker network, and anything local.
-_NO_TLS_SUFFIXES = (".railway.internal",)
+_NO_TLS_SUFFIXES = (".railway.internal", ".docker.internal")
 _NO_TLS_HOSTS = {"localhost", "127.0.0.1", "::1", "postgres", "db"}
 
 
