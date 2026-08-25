@@ -43,25 +43,31 @@ class Config:
     GOOGLE_VISION_CREDENTIALS_PATH = os.getenv("GOOGLE_VISION_CREDENTIALS_PATH")
 
     # --- Validation ---
-    if not DATABASE_URL:
-        raise ValueError("DATABASE_URL not found in .env file")
-    if not JWT_SECRET:
-        raise ValueError("JWT_SECRET not found in .env file")
-    if not CLOUDINARY_CLOUD_NAME:
-        raise ValueError("CLOUDINARY_CLOUD_NAME not found in .env file")
-    if not CLOUDINARY_API_KEY:
-        raise ValueError("CLOUDINARY_API_KEY not found in .env file")
-    if not CLOUDINARY_API_SECRET:
-        raise ValueError("CLOUDINARY_API_SECRET not found in .env file")
-    if not PAYSTACK_SECRET_KEY:
-        raise ValueError("PAYSTACK_SECRET_KEY not found in .env file")
-    if not GMAIL_SENDER_EMAIL:
-        raise ValueError("GMAIL_SENDER_EMAIL not found in .env file")
-    if not GMAIL_APP_PASSWORD:
-        raise ValueError("GMAIL_APP_PASSWORD not found in .env file")
+    # Report every missing variable at once. Failing on the first one means a
+    # deploy has to fail once per variable to discover them all, which is a
+    # miserable loop on a hosted platform.
+    _REQUIRED = (
+        ("DATABASE_URL", DATABASE_URL),
+        ("JWT_SECRET", JWT_SECRET),
+        ("CLOUDINARY_CLOUD_NAME", CLOUDINARY_CLOUD_NAME),
+        ("CLOUDINARY_API_KEY", CLOUDINARY_API_KEY),
+        ("CLOUDINARY_API_SECRET", CLOUDINARY_API_SECRET),
+        ("PAYSTACK_SECRET_KEY", PAYSTACK_SECRET_KEY),
+        ("GMAIL_SENDER_EMAIL", GMAIL_SENDER_EMAIL),
+        ("GMAIL_APP_PASSWORD", GMAIL_APP_PASSWORD),
+    )
+
+    _missing = [name for name, value in _REQUIRED if not value]
+
     if AI_PROVIDER == "google_vision" and not GOOGLE_VISION_CREDENTIALS_PATH:
+        _missing.append("GOOGLE_VISION_CREDENTIALS_PATH (required when AI_PROVIDER=google_vision)")
+
+    if _missing:
         raise ValueError(
-            "GOOGLE_VISION_CREDENTIALS_PATH required when AI_PROVIDER=google_vision"
+            "Missing required configuration: "
+            + ", ".join(_missing)
+            + ". Set these as environment variables (Railway: service Variables tab) "
+            "or in a local .env file. See .env.example."
         )
 
 
