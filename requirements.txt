@@ -26,3 +26,6 @@ cloudinary==1.36.0
 
 # HTTP client (Paystack)
 httpx==0.25.2
+
+# Only imported when AI_PROVIDER=google_vision
+google-cloud-vision==3.7.2
