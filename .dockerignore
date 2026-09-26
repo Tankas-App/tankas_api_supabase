@@ -22,3 +22,7 @@ credentials/
 # Docs and deploy manifests not needed inside the image
 README.md
 render.yaml
+
+# Model weights: only yolov8s.pt is loaded (app/utils/ai_service.py)
+*.pt
+!yolov8s.pt

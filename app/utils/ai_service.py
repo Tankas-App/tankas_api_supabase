@@ -287,14 +287,21 @@ class GoogleVisionProvider(BaseAIProvider):
     }
 
     def __init__(self):
+        import json
         from google.cloud import vision
+        from google.oauth2 import service_account
         from app.config import config
-        import os
 
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = (
-            config.GOOGLE_VISION_CREDENTIALS_PATH
-        )
-        self.client = vision.ImageAnnotatorClient()
+        if config.GOOGLE_VISION_CREDENTIALS_JSON:
+            # Hosted deploys: the key arrives as a JSON string in an env var,
+            # so build credentials in memory rather than writing it to disk.
+            info = json.loads(config.GOOGLE_VISION_CREDENTIALS_JSON)
+            credentials = service_account.Credentials.from_service_account_info(info)
+        else:
+            credentials = service_account.Credentials.from_service_account_file(
+                config.GOOGLE_VISION_CREDENTIALS_PATH
+            )
+        self.client = vision.ImageAnnotatorClient(credentials=credentials)
         print("[AI] Google Vision API initialised ✅")
 
     async def analyze_issue_image(self, image_bytes: bytes) -> Dict:

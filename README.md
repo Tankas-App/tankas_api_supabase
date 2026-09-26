@@ -472,8 +472,10 @@ DATABASE_URL=${{Postgres.DATABASE_URL}}
 ```
 
 Then set the rest from `.env.example`: `JWT_SECRET`, the three `CLOUDINARY_*`
-keys, `PAYSTACK_SECRET_KEY`, `GMAIL_SENDER_EMAIL`, `GMAIL_APP_PASSWORD`, and
-`AI_PROVIDER=yolo`.
+keys, `PAYSTACK_SECRET_KEY`, `AI_PROVIDER=yolo`, `CORS_ALLOW_ORIGINS`, and an
+HTTPS email transport (`EMAIL_PROVIDER=brevo` with `BREVO_API_KEY` and
+`BREVO_SENDER_EMAIL`, or `RESEND_API_KEY`). Railway blocks outbound SMTP, so
+the `GMAIL_*` variables are only needed for local runs.
 
 Leave `DB_SSL` unset. The app auto-detects: TLS is required for managed
 providers, and skipped on Railway's private network, which terminates no TLS
@@ -497,9 +499,9 @@ psql "$DATABASE_URL" -f migrations/002_comments.sql
 - YOLOv8s loads at import time, so first boot takes a while and the container
   needs roughly 1GB of memory. The healthcheck timeout is set generously for
   this reason.
-- `GOOGLE_VISION_CREDENTIALS_PATH` will not work on Railway as-is, since
-  `credentials/` is gitignored and excluded from the image. Stay on
-  `AI_PROVIDER=yolo` unless you mount the JSON another way.
+- For `AI_PROVIDER=google_vision`, paste the service-account JSON into
+  `GOOGLE_VISION_CREDENTIALS_JSON`. `GOOGLE_VISION_CREDENTIALS_PATH` only works
+  locally, since `credentials/` is gitignored and excluded from the image.
 
 ### Running locally with Docker
 
